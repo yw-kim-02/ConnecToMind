@@ -5,9 +5,28 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Model Training Configuration")
 
     parser.add_argument(
-        "--root_dir", type=str, default="/nas/research/03-Neural_decoding/3-bids",
+        "--root_dir", type=str, default="/nas/research/03-Neural_decoding",
         help="Path to the BIDS directory."
     )
+    parser.add_argument(
+        "--seed",type=int,default=42,
+    )
+    parser.add_argument(
+        "--batch_size", type=int, default=32,
+        help="Batch size can be increased by 10x if only training v2c and not diffusion prior",
+    )
+    parser.add_argument(
+        "--num_workers", type=str, default=4,
+        help="multi-processing in dataloader",
+    )
+    parser.add_argument(
+        "--is_shuffle",type=int,default=True,
+        help="is shuffle",
+    )
+    
+
+
+
     parser.add_argument(
         "--model_name", type=str, default="testing",
         help="name of model, used for ckpt saving and wandb logging (if enabled)",
@@ -18,10 +37,6 @@ def parse_args():
     )
     parser.add_argument(
         "--subj",type=int, default=1, choices=[1,2,5,7],
-    )
-    parser.add_argument(
-        "--batch_size", type=int, default=32,
-        help="Batch size can be increased by 10x if only training v2c and not diffusion prior",
     )
     parser.add_argument(
         "--hidden",action=argparse.BooleanOptionalAction,default=True,
@@ -85,9 +100,7 @@ def parse_args():
         "--save_at_end",action=argparse.BooleanOptionalAction,default=False,
         help="if True, saves best.ckpt at end of training. if False and ckpt_saving==True, will save best.ckpt whenever epoch shows best validation score",
     )
-    parser.add_argument(
-        "--seed",type=int,default=42,
-    )
+
     parser.add_argument(
         "--max_lr",type=float,default=3e-4,
     )

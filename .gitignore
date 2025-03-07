@@ -2,3 +2,5 @@
 1-raw_data/
 3-bids/
 4-image/
+
+__pycache__/
