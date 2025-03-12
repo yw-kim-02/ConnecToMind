@@ -4,6 +4,7 @@ import sys
 def parse_args():
     parser = argparse.ArgumentParser(description="Model Training Configuration")
 
+    ###### data.py ######
     parser.add_argument(
         "--root_dir", type=str, default="/nas/research/03-Neural_decoding",
         help="Path to the BIDS directory."
@@ -23,7 +24,7 @@ def parse_args():
         "--is_shuffle",type=int,default=True,
         help="is shuffle",
     )
-    
+    ####################
 
 
 

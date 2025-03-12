@@ -106,7 +106,7 @@ class Bids(Dataset):
         save_path = os.path.join(self.root_dir, "5-mindeye_code", "mindeye1", "samples.npy")
         if os.path.exists(save_path):
             print(f"기존 `samples.npy` 파일 로드 중...")
-            return np.load(save_path, allow_pickle=True).tolist()  # ✅ 리스트로 변환
+            return np.load(save_path, allow_pickle=True).tolist()  
 
         print(f"`samples.npy` 파일 없음 → 새로 생성 중...")
 
@@ -116,11 +116,8 @@ class Bids(Dataset):
             fmri_path = sample["fmri"]
             image_paths = sample["images"]  # 정렬된 이미지 리스트
 
-            # fMRI 데이터의 TR 개수 확인
-            T = nib.load(fmri_path).shape[-1]
-
             # 모든 trial을 리스트에 추가
-            for t in range(T):
+            for t in range(len(image_paths)):
                 samples.append({
                     "fmri": fmri_path,
                     "tr": t,
