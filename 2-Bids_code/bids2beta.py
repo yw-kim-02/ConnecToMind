@@ -42,15 +42,6 @@ def process_subject(sub):
             events_path = os.path.join(func_path, events_file)
             json_path = os.path.join(func_path, json_file)
             
-            # 저장할 beta 파일 경로 설정
-            beta_save_path = os.path.join(derivatives_root, sub, ses, "func")
-            beta_file = os.path.join(beta_save_path, f"{sub}_{ses}_task-image_{run_id}_desc-beta.nii.gz")
-
-            # ✅ 이미 처리된 데이터가 있으면 건너뛰기
-            if os.path.exists(beta_file):
-                print(f"[{sub}] Skipping: {beta_file} already exists.")
-                continue
-            
             if not os.path.exists(events_path) or not os.path.exists(json_path):
                 continue  # 이벤트 파일 또는 JSON 파일이 없으면 스킵
             
@@ -67,10 +58,11 @@ def process_subject(sub):
 
             #  이벤트 파일 로드
             events = pd.read_csv(events_path, sep='\t')
+            # 각 이벤트마다 trial_type을 고유값으로 지정 (예: trial_0, trial_1, ...)
             events = events.copy()
             events['trial_type'] = ['trial_' + str(i) for i in range(len(events))]
             
-            # 디자인 매트릭스 생성 (Nilearn의 기본 사용)
+             # 디자인 매트릭스 생성 (Nilearn의 기본 사용)
             n_scans = fmri_img.shape[-1]
             frame_times = np.arange(n_scans) * tr
             design_matrix = make_first_level_design_matrix(frame_times, events, drift_model=None, high_pass=None)
@@ -78,7 +70,7 @@ def process_subject(sub):
             trial_columns = [col for col in design_matrix.columns if "trial_" in col]
             design_matrix = design_matrix[trial_columns]
             
-            # FirstLevelModel 생성
+            # FirstLevelModel 생성 (기본 HRF 모델 및 기본 drift 옵션 사용)
             first_level_model = FirstLevelModel(t_r=tr, drift_model=None, high_pass=None)
             
             # 모델 피팅
@@ -100,8 +92,10 @@ def process_subject(sub):
                 print(f"[경고] {sub}, {ses}: Beta volume 개수 불일치! ({beta_4d.shape[-1]} vs {len(events)})")
                 continue
             
-            # 저장 경로 생성
+            # 저장 경로 설정
+            beta_save_path = os.path.join(derivatives_root, sub, ses, "func")
             os.makedirs(beta_save_path, exist_ok=True)
+            beta_file = os.path.join(beta_save_path, f"{sub}_{ses}_task-image_{run_id}_desc-beta.nii.gz")
             nib.save(beta_4d, beta_file)
             
             # events.tsv 파일도 derivatives 폴더에 저장
@@ -112,26 +106,6 @@ def process_subject(sub):
             print(f"[{sub}] Saved: {events_save_path} (events.tsv copied)")
 
 if __name__ == "__main__":
-    # ✅ 처리되지 않은 subject만 필터링
-    subjects_to_process = []
-    for sub in subjects:
-        sub_path = os.path.join(bids_root, sub)
-        sessions = [ses for ses in os.listdir(sub_path) if ses.startswith("ses-")]
-
-        for ses in sessions:
-            beta_save_path = os.path.join(derivatives_root, sub, ses, "func")
-            func_files = [f for f in os.listdir(os.path.join(sub_path, ses, "func")) if f.endswith("_bold.nii.gz") and "task-image" in f]
-
-            for bold_file in func_files:
-                run_id = bold_file.split("_")[3]
-                beta_file = os.path.join(beta_save_path, f"{sub}_{ses}_task-image_{run_id}_desc-beta.nii.gz")
-
-                if not os.path.exists(beta_file):  # ✅ 처리되지 않은 경우만 추가
-                    subjects_to_process.append(sub)
-                    break  # 한 개라도 미처리된 데이터가 있으면 추가하고 넘어감
-
-
-    # ✅ 건너뛴 데이터 제외하고 진행률 표시
-    with multiprocessing.Pool(processes=20) as pool:
-        for _ in tqdm(pool.imap(process_subject, subjects_to_process), total=len(subjects_to_process), desc="Processing Subjects"):
+    with multiprocessing.Pool(processes=5) as pool:
+        for _ in tqdm(pool.imap_unordered(process_subject, subjects), total=len(subjects), desc="Processing Subjects"):
             pass
