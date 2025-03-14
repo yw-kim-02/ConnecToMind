@@ -118,7 +118,7 @@ def parse_args():
         help="Where is cached Versatile Diffusion model; if not cached will download to this path",
     )
 
-    # Jupyter 환경에서는 빈 리스트 전달해야 실행이 됨
+    # Jupyter 환경에서는 빈 리스트를 전달해야 실행이 됨
     if any("ipykernel_launcher" in arg for arg in sys.argv):
         args = parser.parse_args([])  
     else:
