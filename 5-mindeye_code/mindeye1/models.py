@@ -331,32 +331,36 @@ class VersatileDiffusionPriorNetwork(nn.Module):
     def __init__(
         self,
         dim,
-        num_timesteps = None,
-        num_time_embeds = 1,
+        num_timesteps = None, # time step 수 ex) 1000
+        num_time_embeds = 1, # time embedding 개수
         num_tokens = 257,
         causal = True,
-        learned_query_mode = 'none',
+        learned_query_mode = 'none', # query 사용 방법
         **kwargs
     ):
         super().__init__()
         self.dim = dim
         self.num_time_embeds = num_time_embeds
-        self.continuous_embedded_time = not exists(num_timesteps)
-        self.learned_query_mode = learned_query_mode
+        self.continuous_embedded_time = not exists(num_timesteps) # time embedding값이 continous or descrete
+        self.learned_query_mode = learned_query_mode # query가 학습되는 방법법
 
-        self.to_time_embeds = nn.Sequential(
+        # time embedding 변환
+        self.to_time_embeds = nn.Sequential( 
             nn.Embedding(num_timesteps, dim * num_time_embeds) if exists(num_timesteps) else nn.Sequential(SinusoidalPosEmb(dim), MLP(dim, dim * num_time_embeds)), # also offer a continuous version of timestep embeddings, with a 2 layer MLP
             Rearrange('b (n d) -> b n d', n = num_time_embeds)
         )
 
+        # query 사용 방법
         if self.learned_query_mode == 'token':
             self.learned_query = nn.Parameter(torch.randn(num_tokens, dim))
-        if self.learned_query_mode == 'pos_emb':
+        if self.learned_query_mode == 'pos_emb': # image embedding + positional embedding
             scale = dim ** -0.5
             self.learned_query = nn.Parameter(torch.randn(num_tokens, dim) * scale)
         if self.learned_query_mode == 'all_pos_emb':
             scale = dim ** -0.5
             self.learned_query = nn.Parameter(torch.randn(num_tokens*2+1, dim) * scale)
+
+        # transformer 저장
         self.causal_transformer = FlaggedCausalTransformer(dim = dim, causal=causal, **kwargs)
 
         self.null_brain_embeds = nn.Parameter(torch.randn(num_tokens, dim))
@@ -438,13 +442,13 @@ class VersatileDiffusionPriorNetwork(nn.Module):
         time_embed = self.to_time_embeds(diffusion_timesteps)
 
         if self.learned_query_mode == 'token':
-            learned_queries = repeat(self.learned_query, 'n d -> b n d', b = batch)
+            learned_queries = repeat(self.learned_query, 'n d -> b n d', b = batch) # repeat: 'n d' shape -> 'b n d' shape로 변경
         elif self.learned_query_mode == 'pos_emb':
-            pos_embs = repeat(self.learned_query, 'n d -> b n d', b = batch)
+            pos_embs = repeat(self.learned_query, 'n d -> b n d', b = batch) # repeat: 'n d' shape -> 'b n d' shape로 변경
             image_embed = image_embed + pos_embs
             learned_queries = torch.empty((batch, 0, dim), device=brain_embed.device)
         elif self.learned_query_mode == 'all_pos_emb':
-            pos_embs = repeat(self.learned_query, 'n d -> b n d', b = batch)
+            pos_embs = repeat(self.learned_query, 'n d -> b n d', b = batch) # repeat: 'n d' shape -> 'b n d' shape로 변경
             learned_queries = torch.empty((batch, 0, dim), device=brain_embed.device)
         else:
             learned_queries = torch.empty((batch, 0, dim), device=brain_embed.device)
