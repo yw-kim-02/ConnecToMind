@@ -19,8 +19,11 @@ import random
 import json
 from dalle2_pytorch.train_configs import DiffusionPriorNetworkConfig
 
-# vd prior
+# for vd 
 from dalle2_pytorch.dalle2_pytorch import RotaryEmbedding, CausalTransformer, SinusoidalPosEmb, MLP, Rearrange, repeat, rearrange, prob_mask_like, LayerNorm, RelPosBias, Attention, FeedForward
+
+# for low-level
+from diffusers.models.vae import Decoder
 
 class Clipper(torch.nn.Module):
     def __init__(self, clip_variant, clamp_embs=False, norm_embs=False, hidden_state=False, device=torch.device('cpu')):
@@ -34,7 +37,7 @@ class Clipper(torch.nn.Module):
             self.clip_size = (224,224)
 
         # image preprocess 변수
-        self.preprocess = preprocess # object를 변수로 저장
+        self.preprocess = None # object를 변수로 저장
         self.mean = np.array([0.48145466, 0.4578275, 0.40821073]) # OpenAI CLIP이 학습한 이미지 데이터 셋의 평균
         self.std = np.array([0.26862954, 0.26130258, 0.27577711]) # OpenAI CLIP이 학습한 이미지 데이터 셋의 표준편차
         self.normalize = transforms.Normalize(self.mean, self.std)
@@ -68,6 +71,7 @@ class Clipper(torch.nn.Module):
             transforms.CenterCrop(size=self.clip_size),
             transforms.Normalize(mean=self.mean, std=self.std)
         ])
+        self.preprocess = preprocess # object를 변수로 저장
         clip_model.eval() 
         # frozen
         for param in clip_model.parameters():
@@ -76,8 +80,8 @@ class Clipper(torch.nn.Module):
 
     def embed_image(self, image):
         '''
-        clip_emb(hidden_state 없을 때): 최종 image embedding - shape: [batch, embedding_dim]
-        clip_emb(hidden_state 있을 때): 최종 image embedding - shape: [batch, sequence_length, embedding_dim]
+        clip_emb(hidden_state 없을 때): 최종 image embedding - shape: [batch, 768]
+        clip_emb(hidden_state 있을 때): 최종 image embedding - shape: [batch, 257, 768]
             Tip: sequence_length는 vit의 sequence의 patch 개수
         '''
         if self.hidden_state:
@@ -102,7 +106,7 @@ class Clipper(torch.nn.Module):
     
     def _versatile_normalize_embeddings(self, encoder_output):
         '''
-        embeds(hidden_state 없을 때): image embedding normalization - shape: [batch, sequence_length, embedding_dim]
+        embeds(hidden_state 있을 때): image embedding normalization - shape: [batch, 257, 768]
             Tip: sequence_length는 vit의 sequence의 patch 개수
         '''
         embeds = encoder_output.last_hidden_state
@@ -204,8 +208,8 @@ class BrainNetwork(nn.Module):
         '''
         # fMRI volume 그대로 들어올 때
         if x.ndim == 4:
-            # assert x.shape[1] == 81 and x.shape[2] == 104 and x.shape[3] == 83, "fMRI data shape 안 맞음" # [N, 81, 104, 83]
-            assert x.shape[1] == 120 and x.shape[2] == 120 and x.shape[3] == 84, "fMRI data shape 안 맞음" # [N, 120, 120, 84]
+            # assert x.shape[1] == 81 and x.shape[2] == 104 and x.shape[3] == 83, "fMRI data shape 안 맞음" # [N, 81, 104, 83]은 nsd genaral roi이다
+            assert x.shape[1] == 120 and x.shape[2] == 120 and x.shape[3] == 84, "fMRI data shape 안 맞음" # [N, 120, 120, 84]은 nsd raw data이다.
             x = x.reshape(x.shape[0], -1) # [N, 1209600]
 
         # MLP back born
@@ -272,294 +276,7 @@ class BrainDiffusionPrior(DiffusionPrior):
         target = image_embed
 
         loss = self.noise_scheduler.loss_fn(pred, target) # diffusion prior에서는 ε가 아닌 x_0를 예측함
-        return loss, pred
-
-class BrainDiffusionPriorOld(DiffusionPrior):
-    """ 
-    Differences from original:
-    - Allow for passing of generators to torch random functions
-    - Option to include the voxel2clip model and pass voxels into forward method
-    - Return predictions when computing loss
-    - Load pretrained model from @nousr trained on LAION aesthetics
-    """
-    def __init__(self, *args, **kwargs):
-        voxel2clip = kwargs.pop('voxel2clip', None)
-        super().__init__(*args, **kwargs)
-        self.voxel2clip = voxel2clip
-
-    @torch.no_grad()
-    def p_sample(self, x, t, text_cond = None, self_cond = None, clip_denoised = True, cond_scale = 1.,
-                generator=None):
-        b, *_, device = *x.shape, x.device
-        model_mean, _, model_log_variance, x_start = self.p_mean_variance(x = x, t = t, text_cond = text_cond, self_cond = self_cond, clip_denoised = clip_denoised, cond_scale = cond_scale)
-        if generator is None:
-            noise = torch.randn_like(x)
-        else:
-            #noise = torch.randn_like(x)
-            noise = torch.randn(x.size(), device=x.device, dtype=x.dtype, generator=generator)
-        # no noise when t == 0
-        nonzero_mask = (1 - (t == 0).float()).reshape(b, *((1,) * (len(x.shape) - 1)))
-        pred = model_mean + nonzero_mask * (0.5 * model_log_variance).exp() * noise
-        return pred, x_start
-
-    @torch.no_grad()
-    def p_sample_loop_ddpm(self, shape, text_cond, cond_scale = 1., generator=None):
-        batch, device = shape[0], self.device
-
-        if generator is None:
-            image_embed = torch.randn(shape, device = device)
-        else:
-            image_embed = torch.randn(shape, device = device, generator=generator)
-        x_start = None # for self-conditioning
-
-        if self.init_image_embed_l2norm:
-            image_embed = l2norm(image_embed) * self.image_embed_scale
-
-        for i in tqdm(reversed(range(0, self.noise_scheduler.num_timesteps)), desc='sampling loop time step', total=self.noise_scheduler.num_timesteps, disable=True):
-            times = torch.full((batch,), i, device = device, dtype = torch.long)
-
-            self_cond = x_start if self.net.self_cond else None
-            image_embed, x_start = self.p_sample(image_embed, times, text_cond = text_cond, self_cond = self_cond, cond_scale = cond_scale, 
-                                                 generator=generator)
-
-        if self.sampling_final_clamp_l2norm and self.predict_x_start:
-            image_embed = self.l2norm_clamp_embed(image_embed)
-
-        return image_embed
-
-    def p_losses(self, image_embed, times, text_cond, noise = None):
-        noise = default(noise, lambda: torch.randn_like(image_embed))
-
-        image_embed_noisy = self.noise_scheduler.q_sample(x_start = image_embed, t = times, noise = noise)
-
-        self_cond = None
-        if self.net.self_cond and random.random() < 0.5:
-            with torch.no_grad():
-                self_cond = self.net(image_embed_noisy, times, **text_cond).detach()
-
-        pred = self.net(
-            image_embed_noisy,
-            times,
-            self_cond = self_cond,
-            text_cond_drop_prob = self.text_cond_drop_prob,
-            image_cond_drop_prob = self.image_cond_drop_prob,
-            **text_cond
-        )
-
-        if self.predict_x_start and self.training_clamp_l2norm:
-            pred = self.l2norm_clamp_embed(pred)
-
-        if self.predict_v:
-            target = self.noise_scheduler.calculate_v(image_embed, times, noise)
-        elif self.predict_x_start:
-            target = image_embed
-        else:
-            target = noise
-
-        loss = self.noise_scheduler.loss_fn(pred, target)
-        return loss, pred
-
-    def forward(
-        self,
-        text = None,
-        image = None,
-        voxel = None,
-        text_embed = None,      # allow for training on preprocessed CLIP text and image embeddings
-        image_embed = None,
-        text_encodings = None,  # as well as CLIP text encodings
-        *args,
-        **kwargs
-    ):
-        # 
-        assert exists(text) ^ exists(text_embed) ^ exists(voxel), 'either text, text embedding, or voxel must be supplied'
-        assert exists(image) ^ exists(image_embed), 'either image or image embedding must be supplied'
-        assert not (self.condition_on_text_encodings and (not exists(text_encodings) and not exists(text))), 'text encodings must be present if you specified you wish to condition on it on initialization'
-
-        if exists(voxel):
-            assert exists(self.voxel2clip), 'voxel2clip must be trained if you wish to pass in voxels'
-            assert not exists(text_embed), 'cannot pass in both text and voxels'
-            text_embed = self.voxel2clip(voxel)
-
-        if exists(image):
-            image_embed, _ = self.clip.embed_image(image)
-
-        # calculate text conditionings, based on what is passed in
-
-        if exists(text):
-            text_embed, text_encodings = self.clip.embed_text(text)
-
-        text_cond = dict(text_embed = text_embed)
-
-        if self.condition_on_text_encodings:
-            assert exists(text_encodings), 'text encodings must be present for diffusion prior if specified'
-            text_cond = {**text_cond, 'text_encodings': text_encodings}
-
-        # timestep conditioning from ddpm
-
-        batch, device = image_embed.shape[0], image_embed.device
-        times = self.noise_scheduler.sample_random_times(batch)
-
-        # scale image embed (Katherine)
-
-        image_embed *= self.image_embed_scale
-
-        # calculate forward loss
-
-        loss, pred = self.p_losses(image_embed, times, text_cond = text_cond, *args, **kwargs)
-
-        return loss, pred#, text_embed
-   
-    @staticmethod
-    def from_pretrained(net_kwargs={}, prior_kwargs={}, voxel2clip_path=None, ckpt_dir='./checkpoints'):
-        # "https://huggingface.co/nousr/conditioned-prior/raw/main/vit-l-14/aesthetic/prior_config.json"
-        config_url = os.path.join(ckpt_dir, "prior_config.json")
-        config = json.load(open(config_url))
-        
-        config['prior']['net']['max_text_len'] = 256
-        config['prior']['net'].update(net_kwargs)
-        # print('net_config', config['prior']['net'])
-        net_config = DiffusionPriorNetworkConfig(**config['prior']['net'])
-
-        kwargs = config['prior']
-        kwargs.pop('clip')
-        kwargs.pop('net')
-        kwargs.update(prior_kwargs)
-        # print('prior_config', kwargs)
-
-        diffusion_prior_network = net_config.create()
-        diffusion_prior = BrainDiffusionPriorOld(net=diffusion_prior_network, clip=None, **kwargs).to(torch.device('cpu'))
-        
-        # 'https://huggingface.co/nousr/conditioned-prior/resolve/main/vit-l-14/aesthetic/best.pth'
-        ckpt_url = os.path.join(ckpt_dir, 'best.pth')
-        ckpt = torch.load(ckpt_url, map_location=torch.device('cpu'))
-
-        # Note these keys will be missing (maybe due to an update to the code since training):
-        # "net.null_text_encodings", "net.null_text_embeds", "net.null_image_embed"
-        # I don't think these get used if `cond_drop_prob = 0` though (which is the default here)
-        diffusion_prior.load_state_dict(ckpt, strict=False)
-        # keys = diffusion_prior.load_state_dict(ckpt, strict=False)
-        # print("missing keys in prior checkpoint (probably ok)", keys.missing_keys)
-
-        if voxel2clip_path:
-            # load the voxel2clip weights
-            checkpoint = torch.load(voxel2clip_path, map_location=torch.device('cpu'))
-            
-            state_dict = checkpoint['model_state_dict']
-            for key in list(state_dict.keys()):
-                if 'module.' in key:
-                    state_dict[key.replace('module.', '')] = state_dict[key]
-                    del state_dict[key]
-            diffusion_prior.voxel2clip.load_state_dict(state_dict)
-        
-        return diffusion_prior
-    
-
-from diffusers.models.vae import Decoder
-class Voxel2StableDiffusionModel(torch.nn.Module):
-    def __init__(self, in_dim=15724, h=4096, n_blocks=4, use_cont=False, ups_mode='4x'):
-        super().__init__()
-        self.lin0 = nn.Sequential(
-            nn.Linear(in_dim, h, bias=False),
-            nn.LayerNorm(h),
-            nn.SiLU(inplace=True),
-            nn.Dropout(0.5),
-        )
-
-        self.mlp = nn.ModuleList([
-            nn.Sequential(
-                nn.Linear(h, h, bias=False),
-                nn.LayerNorm(h),
-                nn.SiLU(inplace=True),
-                nn.Dropout(0.25)
-            ) for _ in range(n_blocks)
-        ])
-        self.ups_mode = ups_mode
-        if ups_mode=='4x':
-            self.lin1 = nn.Linear(h, 16384, bias=False)
-            self.norm = nn.GroupNorm(1, 64)
-            
-            self.upsampler = Decoder(
-                in_channels=64,
-                out_channels=4,
-                up_block_types=["UpDecoderBlock2D","UpDecoderBlock2D","UpDecoderBlock2D"],
-                block_out_channels=[64, 128, 256],
-                layers_per_block=1,
-            )
-
-            if use_cont:
-                self.maps_projector = nn.Sequential(
-                    nn.Conv2d(64, 512, 1, bias=False),
-                    nn.GroupNorm(1,512),
-                    nn.ReLU(True),
-                    nn.Conv2d(512, 512, 1, bias=False),
-                    nn.GroupNorm(1,512),
-                    nn.ReLU(True),
-                    nn.Conv2d(512, 512, 1, bias=True),
-                )
-            else:
-                self.maps_projector = nn.Identity()
-        
-        if ups_mode=='8x':  # prev best
-            self.lin1 = nn.Linear(h, 16384, bias=False)
-            self.norm = nn.GroupNorm(1, 256)
-            
-            self.upsampler = Decoder(
-                in_channels=256,
-                out_channels=4,
-                up_block_types=["UpDecoderBlock2D","UpDecoderBlock2D","UpDecoderBlock2D","UpDecoderBlock2D"],
-                block_out_channels=[64, 128, 256, 256],
-                layers_per_block=1,
-            )
-            self.maps_projector = nn.Identity()
-        
-        if ups_mode=='16x':
-            self.lin1 = nn.Linear(h, 8192, bias=False)
-            self.norm = nn.GroupNorm(1, 512)
-            
-            self.upsampler = Decoder(
-                in_channels=512,
-                out_channels=4,
-                up_block_types=["UpDecoderBlock2D","UpDecoderBlock2D","UpDecoderBlock2D","UpDecoderBlock2D", "UpDecoderBlock2D"],
-                block_out_channels=[64, 128, 256, 256, 512],
-                layers_per_block=1,
-            )
-            self.maps_projector = nn.Identity()
-
-            if use_cont:
-                self.maps_projector = nn.Sequential(
-                    nn.Conv2d(64, 512, 1, bias=False),
-                    nn.GroupNorm(1,512),
-                    nn.ReLU(True),
-                    nn.Conv2d(512, 512, 1, bias=False),
-                    nn.GroupNorm(1,512),
-                    nn.ReLU(True),
-                    nn.Conv2d(512, 512, 1, bias=True),
-                )
-            else:
-                self.maps_projector = nn.Identity()
-
-    def forward(self, x, return_transformer_feats=False):
-        x = self.lin0(x)
-        residual = x
-        for res_block in self.mlp:
-            x = res_block(x)
-            x = x + residual
-            residual = x
-        x = x.reshape(len(x), -1)
-        x = self.lin1(x)  # bs, 4096
-
-        if self.ups_mode == '4x':
-            side = 16
-        if self.ups_mode == '8x':
-            side = 8
-        if self.ups_mode == '16x':
-            side = 4
-        
-        # decoder
-        x = self.norm(x.reshape(x.shape[0], -1, side, side).contiguous())
-        if return_transformer_feats:
-            return self.upsampler(x), self.maps_projector(x).flatten(2).permute(0,2,1)
-        return self.upsampler(x)
+        return loss, pred # train 할 때 보통 loss와 prediction 같이 반환
     
 class VersatileDiffusionPriorNetwork(nn.Module):
     def __init__(
@@ -567,8 +284,6 @@ class VersatileDiffusionPriorNetwork(nn.Module):
         dim,
         num_timesteps = None,
         num_time_embeds = 1,
-        # num_image_embeds = 1,
-        # num_brain_embeds = 1,
         num_tokens = 257,
         causal = True,
         learned_query_mode = 'none',
@@ -750,3 +465,268 @@ class FlaggedCausalTransformer(nn.Module):
 
         out = self.norm(x)
         return self.project_out(out)
+    
+class Voxel2StableDiffusionModel(torch.nn.Module):
+    def __init__(self, in_dim=15724, h=4096, n_blocks=4, use_cont=False, ups_mode='4x'):
+        super().__init__()
+        self.lin0 = nn.Sequential(
+            nn.Linear(in_dim, h, bias=False),
+            nn.LayerNorm(h),
+            nn.SiLU(inplace=True),
+            nn.Dropout(0.5),
+        )
+
+        self.mlp = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(h, h, bias=False),
+                nn.LayerNorm(h),
+                nn.SiLU(inplace=True),
+                nn.Dropout(0.25)
+            ) for _ in range(n_blocks)
+        ])
+
+        # up ampling
+        self.ups_mode = ups_mode 
+        if ups_mode=='4x':
+            self.lin1 = nn.Linear(h, 16384, bias=False) # 16384 = 64 * 16 * 16
+            self.norm = nn.GroupNorm(1, 64)
+            
+            self.upsampler = Decoder(
+                in_channels=64,
+                out_channels=4,
+                up_block_types=["UpDecoderBlock2D","UpDecoderBlock2D","UpDecoderBlock2D"],
+                block_out_channels=[64, 128, 256],
+                layers_per_block=1,
+            )
+
+            if use_cont:
+                self.maps_projector = nn.Sequential(
+                    nn.Conv2d(64, 512, 1, bias=False),
+                    nn.GroupNorm(1,512),
+                    nn.ReLU(True),
+                    nn.Conv2d(512, 512, 1, bias=False),
+                    nn.GroupNorm(1,512),
+                    nn.ReLU(True),
+                    nn.Conv2d(512, 512, 1, bias=True),
+                )
+            else:
+                self.maps_projector = nn.Identity()
+        
+        if ups_mode=='8x':  
+            self.lin1 = nn.Linear(h, 16384, bias=False)
+            self.norm = nn.GroupNorm(1, 256)
+            
+            self.upsampler = Decoder(
+                in_channels=256,
+                out_channels=4,
+                up_block_types=["UpDecoderBlock2D","UpDecoderBlock2D","UpDecoderBlock2D","UpDecoderBlock2D"],
+                block_out_channels=[64, 128, 256, 256],
+                layers_per_block=1,
+            )
+            self.maps_projector = nn.Identity()
+
+    def forward(self, x, return_transformer_feats=False):
+        '''
+        loss 계산에 upsampler와 maps_projector 둘 다 필요하다
+
+        self.upsampler(4x,8x): mlp -> up sampling - shape: [batch_size, 4, 64, 64] 
+        self.maps_projector(x).flatten(2).permute(0,2,1): mlp -> up sampling -> projection - shape: 4x-[batch_size, 256, 512], 8x-[batch_size, 64, 256]
+        '''
+        x = self.lin0(x)
+        residual = x
+        for res_block in self.mlp:
+            x = res_block(x)
+            x = x + residual
+            residual = x
+        x = x.reshape(len(x), -1)
+        x = self.lin1(x)  # bs, 4096
+
+        if self.ups_mode == '4x':
+            side = 16
+        if self.ups_mode == '8x':
+            side = 8
+        
+        # decoder
+        x = self.norm(x.reshape(x.shape[0], -1, side, side).contiguous())
+        if return_transformer_feats:
+            return self.upsampler(x), self.maps_projector(x).flatten(2).permute(0,2,1)
+        return self.upsampler(x)
+
+class BrainDiffusionPriorOld(DiffusionPrior):
+    """ 
+    Differences from original:
+    - Allow for passing of generators to torch random functions
+    - Option to include the voxel2clip model and pass voxels into forward method
+    - Return predictions when computing loss
+    - Load pretrained model from @nousr trained on LAION aesthetics
+    """
+    def __init__(self, *args, **kwargs):
+        voxel2clip = kwargs.pop('voxel2clip', None)
+        super().__init__(*args, **kwargs)
+        self.voxel2clip = voxel2clip
+
+    @torch.no_grad()
+    def p_sample(self, x, t, text_cond = None, self_cond = None, clip_denoised = True, cond_scale = 1.,
+                generator=None):
+        b, *_, device = *x.shape, x.device
+        model_mean, _, model_log_variance, x_start = self.p_mean_variance(x = x, t = t, text_cond = text_cond, self_cond = self_cond, clip_denoised = clip_denoised, cond_scale = cond_scale)
+        if generator is None:
+            noise = torch.randn_like(x)
+        else:
+            #noise = torch.randn_like(x)
+            noise = torch.randn(x.size(), device=x.device, dtype=x.dtype, generator=generator)
+        # no noise when t == 0
+        nonzero_mask = (1 - (t == 0).float()).reshape(b, *((1,) * (len(x.shape) - 1)))
+        pred = model_mean + nonzero_mask * (0.5 * model_log_variance).exp() * noise
+        return pred, x_start
+
+    @torch.no_grad()
+    def p_sample_loop_ddpm(self, shape, text_cond, cond_scale = 1., generator=None):
+        batch, device = shape[0], self.device
+
+        if generator is None:
+            image_embed = torch.randn(shape, device = device)
+        else:
+            image_embed = torch.randn(shape, device = device, generator=generator)
+        x_start = None # for self-conditioning
+
+        if self.init_image_embed_l2norm:
+            image_embed = l2norm(image_embed) * self.image_embed_scale
+
+        for i in tqdm(reversed(range(0, self.noise_scheduler.num_timesteps)), desc='sampling loop time step', total=self.noise_scheduler.num_timesteps, disable=True):
+            times = torch.full((batch,), i, device = device, dtype = torch.long)
+
+            self_cond = x_start if self.net.self_cond else None
+            image_embed, x_start = self.p_sample(image_embed, times, text_cond = text_cond, self_cond = self_cond, cond_scale = cond_scale, 
+                                                 generator=generator)
+
+        if self.sampling_final_clamp_l2norm and self.predict_x_start:
+            image_embed = self.l2norm_clamp_embed(image_embed)
+
+        return image_embed
+
+    def p_losses(self, image_embed, times, text_cond, noise = None):
+        noise = default(noise, lambda: torch.randn_like(image_embed))
+
+        image_embed_noisy = self.noise_scheduler.q_sample(x_start = image_embed, t = times, noise = noise)
+
+        self_cond = None
+        if self.net.self_cond and random.random() < 0.5:
+            with torch.no_grad():
+                self_cond = self.net(image_embed_noisy, times, **text_cond).detach()
+
+        pred = self.net(
+            image_embed_noisy,
+            times,
+            self_cond = self_cond,
+            text_cond_drop_prob = self.text_cond_drop_prob,
+            image_cond_drop_prob = self.image_cond_drop_prob,
+            **text_cond
+        )
+
+        if self.predict_x_start and self.training_clamp_l2norm:
+            pred = self.l2norm_clamp_embed(pred)
+
+        if self.predict_v:
+            target = self.noise_scheduler.calculate_v(image_embed, times, noise)
+        elif self.predict_x_start:
+            target = image_embed
+        else:
+            target = noise
+
+        loss = self.noise_scheduler.loss_fn(pred, target)
+        return loss, pred
+
+    def forward(
+        self,
+        text = None,
+        image = None,
+        voxel = None,
+        text_embed = None,      # allow for training on preprocessed CLIP text and image embeddings
+        image_embed = None,
+        text_encodings = None,  # as well as CLIP text encodings
+        *args,
+        **kwargs
+    ):
+        # 
+        assert exists(text) ^ exists(text_embed) ^ exists(voxel), 'either text, text embedding, or voxel must be supplied'
+        assert exists(image) ^ exists(image_embed), 'either image or image embedding must be supplied'
+        assert not (self.condition_on_text_encodings and (not exists(text_encodings) and not exists(text))), 'text encodings must be present if you specified you wish to condition on it on initialization'
+
+        if exists(voxel):
+            assert exists(self.voxel2clip), 'voxel2clip must be trained if you wish to pass in voxels'
+            assert not exists(text_embed), 'cannot pass in both text and voxels'
+            text_embed = self.voxel2clip(voxel)
+
+        if exists(image):
+            image_embed, _ = self.clip.embed_image(image)
+
+        # calculate text conditionings, based on what is passed in
+
+        if exists(text):
+            text_embed, text_encodings = self.clip.embed_text(text)
+
+        text_cond = dict(text_embed = text_embed)
+
+        if self.condition_on_text_encodings:
+            assert exists(text_encodings), 'text encodings must be present for diffusion prior if specified'
+            text_cond = {**text_cond, 'text_encodings': text_encodings}
+
+        # timestep conditioning from ddpm
+
+        batch, device = image_embed.shape[0], image_embed.device
+        times = self.noise_scheduler.sample_random_times(batch)
+
+        # scale image embed (Katherine)
+
+        image_embed *= self.image_embed_scale
+
+        # calculate forward loss
+
+        loss, pred = self.p_losses(image_embed, times, text_cond = text_cond, *args, **kwargs)
+
+        return loss, pred#, text_embed
+   
+    @staticmethod
+    def from_pretrained(net_kwargs={}, prior_kwargs={}, voxel2clip_path=None, ckpt_dir='./checkpoints'):
+        # "https://huggingface.co/nousr/conditioned-prior/raw/main/vit-l-14/aesthetic/prior_config.json"
+        config_url = os.path.join(ckpt_dir, "prior_config.json")
+        config = json.load(open(config_url))
+        
+        config['prior']['net']['max_text_len'] = 256
+        config['prior']['net'].update(net_kwargs)
+        # print('net_config', config['prior']['net'])
+        net_config = DiffusionPriorNetworkConfig(**config['prior']['net'])
+
+        kwargs = config['prior']
+        kwargs.pop('clip')
+        kwargs.pop('net')
+        kwargs.update(prior_kwargs)
+        # print('prior_config', kwargs)
+
+        diffusion_prior_network = net_config.create()
+        diffusion_prior = BrainDiffusionPriorOld(net=diffusion_prior_network, clip=None, **kwargs).to(torch.device('cpu'))
+        
+        # 'https://huggingface.co/nousr/conditioned-prior/resolve/main/vit-l-14/aesthetic/best.pth'
+        ckpt_url = os.path.join(ckpt_dir, 'best.pth')
+        ckpt = torch.load(ckpt_url, map_location=torch.device('cpu'))
+
+        # Note these keys will be missing (maybe due to an update to the code since training):
+        # "net.null_text_encodings", "net.null_text_embeds", "net.null_image_embed"
+        # I don't think these get used if `cond_drop_prob = 0` though (which is the default here)
+        diffusion_prior.load_state_dict(ckpt, strict=False)
+        # keys = diffusion_prior.load_state_dict(ckpt, strict=False)
+        # print("missing keys in prior checkpoint (probably ok)", keys.missing_keys)
+
+        if voxel2clip_path:
+            # load the voxel2clip weights
+            checkpoint = torch.load(voxel2clip_path, map_location=torch.device('cpu'))
+            
+            state_dict = checkpoint['model_state_dict']
+            for key in list(state_dict.keys()):
+                if 'module.' in key:
+                    state_dict[key.replace('module.', '')] = state_dict[key]
+                    del state_dict[key]
+            diffusion_prior.voxel2clip.load_state_dict(state_dict)
+        
+        return diffusion_prior
