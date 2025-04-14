@@ -231,7 +231,7 @@ class BrainDiffusionPrior(DiffusionPrior):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-    def forward(self, text_embed = None, image_embed = None, *args, **kwargs):
+        def forward(self, text_embed = None, image_embed = None, *args, **kwargs):
         '''
         loss: loss(prediction x_0, target x_0) - shape: Scala
         pred: x_t -> x_t-1 denoise한 결과 - shape: [batch_size, embedding_dim]
@@ -277,6 +277,55 @@ class BrainDiffusionPrior(DiffusionPrior):
 
         loss = self.noise_scheduler.loss_fn(pred, target) # diffusion prior에서는 ε가 아닌 x_0를 예측함
         return loss, pred # train 할 때 보통 loss와 prediction 같이 반환
+
+    @torch.no_grad()
+    def p_sample_loop_ddpm(self, shape, text_cond, cond_scale = 1., generator=None):
+        batch, device = shape[0], self.device
+        x_start = None 
+
+        # image_embed = x_t(가우시안 노이즈 최종버젼)에서 시작
+        if generator is None:
+            image_embed = torch.randn(shape, device = device)
+        else:
+            image_embed = torch.randn(shape, device = device, generator=generator)
+
+        # image_embedding(x_t) nomalization
+        if self.init_image_embed_l2norm:
+            image_embed = l2norm(image_embed) * self.image_embed_scale
+
+        # t_t -> x_0으로 denoise 시작
+        for i in tqdm(reversed(range(0, self.noise_scheduler.num_timesteps)), desc='sampling loop time step', total=self.noise_scheduler.num_timesteps, disable=True):
+            times = torch.full((batch,), i, device = device, dtype = torch.long)
+
+            self_cond = x_start if self.net.self_cond else None
+            image_embed, x_start = self.p_sample(image_embed, times, text_cond = text_cond, self_cond = self_cond, cond_scale = cond_scale, generator=generator)
+        
+        # image embedding(x_0) nomalization
+        if self.sampling_final_clamp_l2norm and self.predict_x_start:
+            image_embed = self.l2norm_clamp_embed(image_embed)
+
+        return image_embed
+
+    # 한 스텝 denoise 적용
+    @torch.no_grad()
+    def p_sample(self, x, t, text_cond = None, self_cond = None, clip_denoised = True, cond_scale = 1., generator=None):
+        b, *_, device = *x.shape, x.device
+        model_mean, _, model_log_variance, x_start = self.p_mean_variance(x = x, t = t, text_cond = text_cond, self_cond = self_cond, clip_denoised = clip_denoised, cond_scale = cond_scale)
+        
+        # generator를 사용하면 분포에서 고정된 값을 뽑음 -> 매번 같은 이미지 생성
+        if generator is None:
+            noise = torch.randn_like(x)
+        else:
+            noise = torch.randn(x.size(), device=x.device, dtype=x.dtype, generator=generator)
+
+        # t-1에 denoise 
+        # 생성
+        nonzero_mask = (1 - (t == 0).float()).reshape(b, *((1,) * (len(x.shape) - 1))) # x_0이면 noise를 사용하지 않음
+        # 적용
+        pred = model_mean + nonzero_mask * (0.5 * model_log_variance).exp() * noise
+        return pred, x_start
+
+
     
 class VersatileDiffusionPriorNetwork(nn.Module):
     def __init__(
