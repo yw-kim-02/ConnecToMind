@@ -350,10 +350,15 @@ class VersatileDiffusionPriorNetwork(nn.Module):
             Rearrange('b (n d) -> b n d', n = num_time_embeds)
         )
 
-        # query(pure noise로 만들어짐)
+        # query 사용 방법
+        if self.learned_query_mode == 'token':
+            self.learned_query = nn.Parameter(torch.randn(num_tokens, dim))
         if self.learned_query_mode == 'pos_emb': # image embedding + positional embedding
             scale = dim ** -0.5
             self.learned_query = nn.Parameter(torch.randn(num_tokens, dim) * scale)
+        if self.learned_query_mode == 'all_pos_emb':
+            scale = dim ** -0.5
+            self.learned_query = nn.Parameter(torch.randn(num_tokens*2+1, dim) * scale)
 
         # transformer 저장
         self.causal_transformer = FlaggedCausalTransformer(dim = dim, causal=causal, **kwargs)
@@ -371,13 +376,11 @@ class VersatileDiffusionPriorNetwork(nn.Module):
 
     # Classifier-Free Guidance(inference할 때만 사용)
     def forward_with_cond_scale(self,*args,cond_scale = 1.,**kwargs):
-        # 모든 데이터가 condition이 적용된 prediction 값 - pure noise + cross attention
-        logits = self.forward(*args, **kwargs) 
+        logits = self.forward(*args, **kwargs) # mask가 모두 0
 
         if cond_scale == 1:
             return logits
 
-        # 모든 데이터가 condition이 적용되지 않은 prediction 값 - pure noise
         null_logits = self.forward(*args, brain_cond_drop_prob = 1, image_cond_drop_prob = 1, **kwargs) # mask가 모두 1
 
         # condition이 있을 때와 없을 때의 차이를 계산 
@@ -415,7 +418,7 @@ class VersatileDiffusionPriorNetwork(nn.Module):
         image_keep_mask = rearrange(image_keep_mask, 'b -> b 1 1') # image_mask.shape -> [B, 1, 1]
 
 
-        # image_keep_mask에 해당하는 embedding값은 모두 0 or 1
+        # mask out image embeddings with null brain embeddings -> image_keep_mask에 해당하는 embedding값은 모두 0
         null_brain_embeds = self.null_brain_embeds.to(brain_embed.dtype)
         brain_embed = torch.where(
             brain_keep_mask, # broadcast
@@ -423,7 +426,7 @@ class VersatileDiffusionPriorNetwork(nn.Module):
             null_brain_embeds[None]
         )
 
-        # image_keep_mask에 해당하는 embedding값은 모두 0 or 1
+        # mask out image embeddings with null image embeddings -> image_keep_mask에 해당하는 embedding값은 모두 0
         null_image_embed = self.null_image_embed.to(image_embed.dtype)
         image_embed = torch.where( 
             image_keep_mask, # broadcast
@@ -436,21 +439,31 @@ class VersatileDiffusionPriorNetwork(nn.Module):
             diffusion_timesteps = diffusion_timesteps.type(dtype)
         time_embed = self.to_time_embeds(diffusion_timesteps)
 
-        # query 정의
-        if self.learned_query_mode == 'pos_emb':
+        if self.learned_query_mode == 'token':
+            learned_queries = repeat(self.learned_query, 'n d -> b n d', b = batch) # repeat: '257 768' shape -> 'b 257 768' shape로 변경
+        elif self.learned_query_mode == 'pos_emb':
             pos_embs = repeat(self.learned_query, 'n d -> b n d', b = batch) # repeat: '257 768' shape -> 'b 257 768' shape로 변경
-            image_embed = image_embed + pos_embs # query(pure noise로 만들어짐) -(forward)-> prediction 값
-
-            tokens = torch.cat((
-                brain_embed,  # key, value로 사용: [b, 257, 768] 
-                time_embed,  # [b, 1, 768]
-                image_embed,  # query로 사용: [b, 257, 768]
-            ), dim = -2) # [b, 257 + 1 + 257 + 257, 768] = [b, 772, 768]
+            image_embed = image_embed + pos_embs
+            learned_queries = torch.empty((batch, 0, dim), device=brain_embed.device)
+        elif self.learned_query_mode == 'all_pos_emb':
+            pos_embs = repeat(self.learned_query, 'n d -> b n d', b = batch) # repeat: '257 768' shape -> 'b 257 768' shape로 변경
+            learned_queries = torch.empty((batch, 0, dim), device=brain_embed.device)
+        else:
+            learned_queries = torch.empty((batch, 0, dim), device=brain_embed.device)
+        
+        tokens = torch.cat((
+            brain_embed,  # [b, 257, 768]
+            time_embed,  # [b, 1, 768]
+            image_embed,  # [b, 257, 768]
+            learned_queries  # [b, 0, 768] or [b, 257, 768]
+        ), dim = -2) # [b, 257 + 1 + 257 + 257, 768] = [b, 772, 768]
+        if self.learned_query_mode == 'all_pos_emb':
+            tokens = tokens + pos_embs
 
         # transformer
         tokens = self.causal_transformer(tokens) # output: [b, 772, 768]
 
-        pred_image_embed = tokens[..., -self.num_tokens:, :] # output: [b, 257, 768] - image_embed를 prediction값으로 사용
+        pred_image_embed = tokens[..., -self.num_tokens:, :] # output: [b, 257, 768] - learned_queries를 prediction값으로 사용
 
         return pred_image_embed
 
@@ -482,7 +495,7 @@ class FlaggedCausalTransformer(nn.Module):
         self.layers = nn.ModuleList([])
         for _ in range(depth):
             self.layers.append(nn.ModuleList([
-                Attention(dim = dim, causal = causal, dim_head = dim_head, heads = heads, dropout = attn_dropout, rotary_emb = rotary_emb), # tokens에서 key, query, value로 나눠짐
+                Attention(dim = dim, causal = causal, dim_head = dim_head, heads = heads, dropout = attn_dropout, rotary_emb = rotary_emb),
                 FeedForward(dim = dim, mult = ff_mult, dropout = ff_dropout, post_activation_norm = normformer)
             ]))
 
