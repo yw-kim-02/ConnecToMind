@@ -1,18 +1,21 @@
 import os
+import re
 import glob
 import pandas as pd
 import numpy as np
+
+import torch
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.data import ConcatDataset
+from torch import nn
+import torch.nn.functional as F
+from torchvision import transforms
 
 from PIL import Image
 import nibabel as nib
 
 import utils
 from args import parse_args
-
-from torch import nn
-import torch.nn.functional as F
 
 
 class FmriImageDataset(Dataset):
@@ -23,7 +26,7 @@ class FmriImageDataset(Dataset):
         self.split = split  # 'train' or 'test'
         self.transform = transform
 
-        # 한 번만 split 기준으로 index 뽑아두기
+        # train & test 각각 index 뽑아두기
         df = pd.read_csv(self.tsv_path, sep='\t')
         self.valid_indices = df[df['split'] == split].index.tolist()
 
@@ -37,9 +40,9 @@ class FmriImageDataset(Dataset):
         fmri = nib.load(self.fmri_path).get_fdata()
         fmri_vol = torch.tensor(fmri[:, :, :, actual_idx]).float()
 
-        # stim_id 한 줄만 로딩
+        # image column 한 행만 로딩
         row = pd.read_csv(self.tsv_path, sep='\t', skiprows=range(1, actual_idx + 1), nrows=1)
-        image_id = row['stim_id'].values[0]
+        image_id = row['image'].values[0]
 
         # 이미지 로딩
         image_path = os.path.join(self.image_dir, image_id)
@@ -49,7 +52,7 @@ class FmriImageDataset(Dataset):
 
         return fmri_vol, image
 
-def stack_sub1_dataset(image_dir: str, base_dir: str = "data"):
+def stack_sub1_dataset(base_dir, image_dir):
     # 세션 자동 추출
     pattern = f"{base_dir}/sub-01_ses-*_desc-betaroizscore.nii.gz"
     fmri_files = glob.glob(pattern)
@@ -58,16 +61,52 @@ def stack_sub1_dataset(image_dir: str, base_dir: str = "data"):
     train_datasets, test_datasets = [], []
 
     for ses in sessions:
-        fmri_path = f"{base_dir}/sub-{subject_id}_ses-{ses}_desc-betaroizscore.nii.gz"
-        tsv_path = f"{base_dir}/sub-{subject_id}_ses-{ses}_task-image_events.tsv"
+        fmri_path = f"{base_dir}/sub-01_ses-{ses}_desc-betaroizscore.nii.gz"
+        tsv_path = f"{base_dir}/sub-01_ses-{ses}_task-image_events.tsv"
 
         train_datasets.append(FmriImageDataset(fmri_path, tsv_path, image_dir, split='train'))
         test_datasets.append(FmriImageDataset(fmri_path, tsv_path, image_dir, split='test'))
 
-    final_train_dataset = ConcatDataset(train_datasets)
-    final_test_dataset = ConcatDataset(test_datasets)
+    # Dataset 합침
+    train_dataset = ConcatDataset(train_datasets)
+    test_dataset = ConcatDataset(test_datasets)
     
-    return final_train_dataset, final_test_dataset
+    return train_dataset, test_dataset
+
+
+def get_loader(base_dir, image_dir, transform=None):
+
+    args = parse_args()
+
+    # 시드 고정
+    utils.seed_everything(args.seed) 
+
+    # Dataset 생성
+    train_dataset, test_dataset = stack_sub1_dataset(image_dir=image_dir, base_dir=base_dir)
+
+    # 기본 이미지 전처리 (필요에 따라 수정 가능)
+    # if transform is None:
+    #     transform = transforms.Compose([
+    #         transforms.Resize((224, 224)),  # 예: Vision 모델에 맞게
+    #         transforms.ToTensor(),
+    #         transforms.Normalize(mean=[0.5]*3, std=[0.5]*3)  # 3채널 정규화
+    #    ])
+
+    # Dataset에 transform 적용
+    # for dataset in train_dataset.datasets: # train_dataset.datasets == [ds1, ds2, ...]
+    #     dataset.transform = transform
+    # for dataset in test_dataset.datasets: # test_dataset.datasets == [ds1, ds2, ...]
+    #     dataset.transform = transform 
+
+    # DataLoader 생성
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, num_workers=args.num_workers, pin_memory=True, shuffle=args.is_shuffle)
+
+    test_loader = DataLoader(test_dataset, batch_size=args.batch_size, num_workers=args.num_workers, pin_memory=True, shuffle=False)
+
+    return train_loader, test_loader
+
+
+
 
 # 베타값(t=trial개수)을 기준으로 한 코드
 # class Bids(Dataset):
@@ -186,13 +225,13 @@ def stack_sub1_dataset(image_dir: str, base_dir: str = "data"):
         
 #         return samples
     
-def get_loader():
-    args = parse_args()
+# def get_loader():
+#     args = parse_args()
 
-    # 시드 고정
-    utils.seed_everything(args.seed) 
+#     # 시드 고정
+#     utils.seed_everything(args.seed) 
 
-    dataset = Bids(args)
-    dataloader = DataLoader(dataset, batch_size=args.batch_size, num_workers=args.num_workers, pin_memory=True, shuffle=args.is_shuffle)
+#     dataset = Bids(args)
+#     dataloader = DataLoader(dataset, batch_size=args.batch_size, num_workers=args.num_workers, pin_memory=True, shuffle=args.is_shuffle)
 
-    return dataloader
+#     return dataloader
