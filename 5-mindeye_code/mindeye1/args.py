@@ -7,17 +7,31 @@ def parse_args():
     ###### data.py ######
     parser.add_argument(
         "--root_dir", type=str, default="/nas/research/03-Neural_decoding",
-        help="Path to the BIDS directory."
+        help="Path to the BIDS root."
     )
+    parser.add_argument(
+        "--fmri_dir", type=str, default="3-bids/derivatives",
+        help="Path to the BIDS fmri."
+    )
+    parser.add_argument(
+        "--fmri_detail_dir", type=str, default="b4_roi_zscore",
+        choices=["b4_roi_zscore"],
+        help="Path to the BIDS fmri_detail."
+    )
+    parser.add_argument(
+        "--image_dir", type=str, default="4-image",
+        help="Path to the BIDS image."
+    )
+    
     parser.add_argument(
         "--seed",type=int,default=42,
     )
     parser.add_argument(
-        "--batch_size", type=int, default=32,
+        "--batch_size", type=int, default=4,
         help="Batch size can be increased by 10x if only training v2c and not diffusion prior",
     )
     parser.add_argument(
-        "--num_workers", type=str, default=4,
+        "--num_workers", type=str, default=0,
         help="multi-processing in dataloader",
     )
     parser.add_argument(
@@ -26,27 +40,48 @@ def parse_args():
     )
     ####################
 
-
-
-    parser.add_argument(
-        "--model_name", type=str, default="testing",
-        help="name of model, used for ckpt saving and wandb logging (if enabled)",
-    )
-    parser.add_argument(
-        "--data_path", type=str, default="/fsx/proj-medarc/fmri/natural-scenes-dataset",
-        help="Path to where NSD data is stored / where to download it to",
-    )
+    ###### trainer #####
     parser.add_argument(
         "--subj",type=int, default=1, choices=[1,2,5,7],
+    )
+    parser.add_argument(
+        "--device",type=str,default=torch.device('gpu'),
+        help='device',
+    )
+    parser.add_argument(
+        "--clip_variant",type=str,default="ViT-L/14",
+        choices=["RN50", "ViT-L/14", "ViT-B/32", "RN50x64"],
+        help='OpenAI clip variant',
+    )
+    parser.add_argument(
+        "--norm_embs",action=argparse.BooleanOptionalAction,default=True,
+        help="embedding 사용 유무",
     )
     parser.add_argument(
         "--hidden",action=argparse.BooleanOptionalAction,default=True,
         help="if True, CLIP embeddings will come from last hidden layer (e.g., 257x768 - Versatile Diffusion), rather than final layer",
     )
     parser.add_argument(
-        "--clip_variant",type=str,default="ViT-L/14",choices=["RN50", "ViT-L/14", "ViT-B/32", "RN50x64"],
-        help='OpenAI clip variant',
+        "--optimizer",type=str,default='adamw',
     )
+    parser.add_argument(
+        "--max_lr",type=float,default=3e-4,
+    )
+    parser.add_argument(
+        "--scheduler",type=str,default='cycle',
+        choices=['cycle','linear'],
+    )
+    parser.add_argument(
+        "--num_epochs",type=int,default=240,
+        help="number of epochs of training",
+    )
+    parser.add_argument(
+        "--num_devices",type=int,default=2,
+        help="number of devices",
+    )
+    ####################
+    
+    
     parser.add_argument(
         "--wandb_log",action=argparse.BooleanOptionalAction,default=False,
         help="whether to log to wandb",
@@ -64,17 +99,10 @@ def parse_args():
         help="proportion of way through training when to switch from BiMixCo to SoftCLIP",
     )
     parser.add_argument(
-        "--norm_embs",action=argparse.BooleanOptionalAction,default=True,
-        help="Do l2-norming of CLIP embeddings",
-    )
-    parser.add_argument(
         "--use_image_aug",action=argparse.BooleanOptionalAction,default=True,
         help="whether to use image augmentation",
     )
-    parser.add_argument(
-        "--num_epochs",type=int,default=240,
-        help="number of epochs of training",
-    )
+
     parser.add_argument(
         "--prior",action=argparse.BooleanOptionalAction,default=True,
         help="if False, will only use CLIP loss and ignore diffusion prior",
@@ -102,16 +130,10 @@ def parse_args():
         help="if True, saves best.ckpt at end of training. if False and ckpt_saving==True, will save best.ckpt whenever epoch shows best validation score",
     )
 
-    parser.add_argument(
-        "--max_lr",type=float,default=3e-4,
-    )
+    
     parser.add_argument(
         "--n_samples_save",type=int,default=0,choices=[0,1],
         help="Number of reconstructions for monitoring progress, 0 will speed up training",
-    )
-    parser.add_argument(
-        "--use_projector",action=argparse.BooleanOptionalAction,default=True,
-        help="Additional MLP after the main MLP so model can separately learn a way to minimize NCE from prior loss (BYOL)",
     )
     parser.add_argument(
         "--vd_cache_dir", type=str, default='/fsx/proj-medarc/fmri/cache/models--shi-labs--versatile-diffusion/snapshots/2926f8e11ea526b562cd592b099fcf9c2985d0b7',

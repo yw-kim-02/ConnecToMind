@@ -42,26 +42,25 @@ for sub in subs:
             merged_df.to_csv(output_path, sep='\t', index=False)    #tsv파일로 저장 
             print(f"Saved: {output_path}")
 '''
+
 import os
-import pandas as pd
 from glob import glob
+import pandas as pd
 
-# TSV 파일들이 있는 상위 디렉토리
-tsv_dir = '/nas/research/03-Neural_decoding/3-bids/derivatives/b4_roi_zscore'
+# 1. shared.txt 파일에서 이미지 이름 읽기 (.jpg 제거)
+with open('/nas/research/03-Neural_decoding/4-image/raw/nsd/info/shared.txt', 'r') as f:
+    shared_images = {line.strip().replace('.jpg', '') for line in f.readlines()}
 
-# 모든 *_task-image_events.tsv 파일 찾기
-tsv_files = glob(os.path.join(tsv_dir, 'sub-*', 'func', '*_task-image_events.tsv'))
+# 2. tsv 파일 경로 설정
+tsv_dir = '/nas/research/03-Neural_decoding/3-bids/derivatives/b4_roi_zscore_bids'
+tsv_files = glob(os.path.join(tsv_dir, 'sub-*','ses-*', 'func', '*_task-image_events.tsv'))
 
-for tsv_path in tsv_files:
-    try:
-        df = pd.read_csv(tsv_path, sep='\t')
+# 3. 각 tsv 파일 처리
+for tsv_file in tsv_files:
+    df = pd.read_csv(tsv_file, sep='\t')
 
-        if 'train' in df.columns:
-            df = df.drop(columns=['train'])
-            df.to_csv(tsv_path, sep='\t', index=False)
-            print(f"Removed 'train' column: {tsv_path}")
-        else:
-            print(f"No 'train' column to remove in: {tsv_path}")
+    # 4. 'train' column 추가: shared.txt에 있으면 0, 없으면 1
+    df['train'] = df['image'].apply(lambda x: 0 if x in shared_images else 1)
 
-    except Exception as e:
-        print(f"Error processing {tsv_path}: {e}")
+    # 5. 덮어쓰기 저장 (백업하고 싶으면 경로를 바꿔도 됨)
+    df.to_csv(tsv_file, sep='\t', index=False)

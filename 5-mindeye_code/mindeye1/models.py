@@ -114,54 +114,9 @@ class Clipper(torch.nn.Module):
         embeds = self.image_encoder.visual_projection(embeds)
         return embeds 
     
-class OpenClipper(torch.nn.Module):
-    def __init__(self, clip_variant='ViT-H-14', hidden_state=False, norm_embs=False, device=torch.device('cpu')):
-        super().__init__()
-        print(clip_variant, device)
-        assert clip_variant == 'ViT-H-14' # not setup for other models yet
-         
-        try:
-            clip_model, _, preprocess = open_clip.create_model_and_transforms('ViT-H-14', 
-                                        pretrained="/fsx/proj-medarc/fmri/cache/openclip/open_clip_pytorch_model.bin", device=device)
-        except:
-            print("no cached model found, downloading...")
-            clip_model, _, preprocess = open_clip.create_model_and_transforms('ViT-H-14', 
-                                        pretrained='laion2b_s32b_b79k', device=device)
-            
-        clip_model.eval() # dont want to train model
-        for param in clip_model.parameters():
-            param.requires_grad = False # dont need to calculate gradients
-            
-        # overwrite preprocess to accept torch inputs instead of PIL Image
-        preprocess = transforms.Compose([
-                transforms.Resize(224, interpolation=transforms.InterpolationMode.BICUBIC, antialias=None),
-                transforms.CenterCrop(224),
-                transforms.Normalize(mean=(0.48145466, 0.4578275, 0.40821073), std=(0.26862954, 0.26130258, 0.27577711))
-        ])
-            
-        self.clip = clip_model
-        self.preprocess = preprocess
-        self.device = device
-        self.norm_embs = norm_embs
-        
-        if hidden_state:
-            print("THIS IS NOT WORKING CURRENTLY!")
-            clip_model.visual.transformer.resblocks[31].mlp = nn.Identity()
-            clip_model.visual.ln_post = nn.Identity()
-            clip_model.token_embedding = nn.Identity()
-            clip_model.ln_final = nn.Identity()
-            
-    def embed_image(self, image):
-        """Expects images in -1 to 1 range"""
-        clip_emb = self.preprocess(image.to(self.device))
-        clip_emb = self.clip.encode_image(clip_emb)
-        if self.norm_embs:
-            clip_emb = nn.functional.normalize(clip_emb.flatten(1), dim=-1)
-            clip_emb = clip_emb.reshape(len(clip_emb),-1,1024)
-        return clip_emb
     
 class BrainNetwork(nn.Module):
-    def __init__(self, in_dim=15724, out_dim=768, clip_size=768, h=4096, n_blocks=4, norm_type='ln', act_first=False, use_projector=True):
+    def __init__(self, in_dim=15724, out_dim=768, clip_size=768, h=4096, n_blocks=4, norm_type='ln', act_first=False):
         super().__init__()
         
         norm_func = partial(nn.BatchNorm1d, num_features=h) if norm_type == 'bn' else partial(nn.LayerNorm, normalized_shape=h) # batch norm과 layer norm에 인자(h)를 미리 고정
@@ -170,7 +125,6 @@ class BrainNetwork(nn.Module):
 
         self.clip_size = clip_size
         self.n_blocks = n_blocks
-        self.use_projector = use_projector
 
         # MLP back born 할 때 사용
         self.lin0 = nn.Sequential( # 15724 -> 4096
@@ -188,18 +142,18 @@ class BrainNetwork(nn.Module):
         self.lin1 = nn.Linear(h, out_dim, bias=True) # 4096 -> 768
         
         # contrastive learning 할 때 사용
-        if use_projector: # clip_size -> 고차원 공간(2048) -> clip_size
-            self.projector = nn.Sequential(
-                nn.LayerNorm(clip_size),
-                nn.GELU(),
-                nn.Linear(clip_size, 2048),
-                nn.LayerNorm(2048),
-                nn.GELU(),
-                nn.Linear(2048, 2048),
-                nn.LayerNorm(2048),
-                nn.GELU(),
-                nn.Linear(2048, clip_size)
-            )
+        # clip_size -> 고차원 공간(2048) -> clip_size
+        self.projector = nn.Sequential(
+            nn.LayerNorm(clip_size),
+            nn.GELU(),
+            nn.Linear(clip_size, 2048),
+            nn.LayerNorm(2048),
+            nn.GELU(),
+            nn.Linear(2048, 2048),
+            nn.LayerNorm(2048),
+            nn.GELU(),
+            nn.Linear(2048, clip_size)
+        )
         
     def forward(self, x):
         '''
@@ -222,10 +176,9 @@ class BrainNetwork(nn.Module):
         x = x.reshape(len(x), -1)
         x = self.lin1(x)
 
-        # contrastive learning 
-        if self.use_projector:
-            return x, self.projector(x.reshape(len(x), -1, self.clip_size))
-        return x
+        # MLP backborn + MLP projection(contrastive learning)
+        return x, self.projector(x.reshape(len(x), -1, self.clip_size))
+        
 
 class BrainDiffusionPrior(DiffusionPrior):
     def __init__(self, *args, **kwargs):
@@ -326,7 +279,7 @@ class BrainDiffusionPrior(DiffusionPrior):
         return pred, x_start
 
 
-    
+# dalle2(학습 o) + versatile difussion(학습 x)    
 class VersatileDiffusionPriorNetwork(nn.Module):
     def __init__(
         self,
@@ -459,7 +412,7 @@ class FlaggedCausalTransformer(nn.Module):
         self,
         *,
         dim,
-        depth,
+        depth, # transformer의 layer 수 -> versatile의 한 step의 layer
         dim_head = 64,
         heads = 8,
         ff_mult = 4,
@@ -588,6 +541,53 @@ class Voxel2StableDiffusionModel(torch.nn.Module):
         if return_transformer_feats:
             return self.upsampler(x), self.maps_projector(x).flatten(2).permute(0,2,1)
         return self.upsampler(x)
+
+class OpenClipper(torch.nn.Module):
+    def __init__(self, clip_variant='ViT-H-14', hidden_state=False, norm_embs=False, device=torch.device('cpu')):
+        super().__init__()
+        print(clip_variant, device)
+        assert clip_variant == 'ViT-H-14' # not setup for other models yet
+         
+        try:
+            clip_model, _, preprocess = open_clip.create_model_and_transforms('ViT-H-14', 
+                                        pretrained="/fsx/proj-medarc/fmri/cache/openclip/open_clip_pytorch_model.bin", device=device)
+        except:
+            print("no cached model found, downloading...")
+            clip_model, _, preprocess = open_clip.create_model_and_transforms('ViT-H-14', 
+                                        pretrained='laion2b_s32b_b79k', device=device)
+            
+        clip_model.eval() # dont want to train model
+        for param in clip_model.parameters():
+            param.requires_grad = False # dont need to calculate gradients
+            
+        # overwrite preprocess to accept torch inputs instead of PIL Image
+        preprocess = transforms.Compose([
+                transforms.Resize(224, interpolation=transforms.InterpolationMode.BICUBIC, antialias=None),
+                transforms.CenterCrop(224),
+                transforms.Normalize(mean=(0.48145466, 0.4578275, 0.40821073), std=(0.26862954, 0.26130258, 0.27577711))
+        ])
+            
+        self.clip = clip_model
+        self.preprocess = preprocess
+        self.device = device
+        self.norm_embs = norm_embs
+        
+        if hidden_state:
+            print("THIS IS NOT WORKING CURRENTLY!")
+            clip_model.visual.transformer.resblocks[31].mlp = nn.Identity()
+            clip_model.visual.ln_post = nn.Identity()
+            clip_model.token_embedding = nn.Identity()
+            clip_model.ln_final = nn.Identity()
+            
+    def embed_image(self, image):
+        """Expects images in -1 to 1 range"""
+        clip_emb = self.preprocess(image.to(self.device))
+        clip_emb = self.clip.encode_image(clip_emb)
+        if self.norm_embs:
+            clip_emb = nn.functional.normalize(clip_emb.flatten(1), dim=-1)
+            clip_emb = clip_emb.reshape(len(clip_emb),-1,1024)
+        return clip_emb
+
 
 class BrainDiffusionPriorOld(DiffusionPrior):
     """ 
