@@ -1,5 +1,6 @@
 import argparse
 import sys
+import torch
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Model Training Configuration")
@@ -22,7 +23,10 @@ def parse_args():
         "--image_dir", type=str, default="4-image",
         help="Path to the BIDS image."
     )
-    
+    parser.add_argument(
+        '--mode', type=str, choices=['train', 'test'], default='test',
+        help="train과 test 구분"
+    )
     parser.add_argument(
         "--seed",type=int,default=42,
     )
@@ -40,12 +44,12 @@ def parse_args():
     )
     ####################
 
-    ###### trainer #####
+    ###### mindeye1 #####
     parser.add_argument(
         "--subj",type=int, default=1, choices=[1,2,5,7],
     )
     parser.add_argument(
-        "--device",type=str,default=torch.device('gpu'),
+        "--device",type=str,default="cuda",
         help='device',
     )
     parser.add_argument(
@@ -78,6 +82,10 @@ def parse_args():
     parser.add_argument(
         "--num_devices",type=int,default=2,
         help="number of devices",
+    )
+    parser.add_argument(
+        "--vd_cache_dir", type=str, default='/nas/research/03-Neural_decoding/5-mindeye_code/pretrained_cache',
+        help="Where is cached Versatile Diffusion model; if not cached will download to this path",
     )
     ####################
     
@@ -135,10 +143,12 @@ def parse_args():
         "--n_samples_save",type=int,default=0,choices=[0,1],
         help="Number of reconstructions for monitoring progress, 0 will speed up training",
     )
+
     parser.add_argument(
-        "--vd_cache_dir", type=str, default='/fsx/proj-medarc/fmri/cache/models--shi-labs--versatile-diffusion/snapshots/2926f8e11ea526b562cd592b099fcf9c2985d0b7',
-        help="Where is cached Versatile Diffusion model; if not cached will download to this path",
+        "--num_inference_steps", type=int, default=20,
+        help= "versatile inference step"
     )
+    
 
     # Jupyter 환경에서는 빈 리스트를 전달해야 실행이 됨
     if any("ipykernel_launcher" in arg for arg in sys.argv):
