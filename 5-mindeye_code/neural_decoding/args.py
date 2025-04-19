@@ -77,7 +77,7 @@ def parse_args():
     )
     parser.add_argument(
         "--num_epochs",type=int,default=240,
-        help="number of epochs of training",
+        help="epoch 개수",
     )
     parser.add_argument(
         "--num_devices",type=int,default=2,

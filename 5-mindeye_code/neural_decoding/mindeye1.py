@@ -188,7 +188,7 @@ class BrainNetwork(nn.Module):
         # MLP backborn + MLP projection(contrastive learning)
         return x, self.projector(x.reshape(len(x), -1, self.clip_size))
         
-
+# BrainNetwork과 versatileDiffusionPriorNetwork가 인자로 들어감
 class BrainDiffusionPrior(DiffusionPrior):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -826,6 +826,7 @@ def get_model_highlevel():
         learned_query_mode="pos_emb"
     ).to(args.device)
 
+    # VersatileDiffusionPriorNetwork + BrainNetwork가 인자로 들어감
     diffusion_prior = BrainDiffusionPrior(
         net=prior_network,
         image_embed_dim=out_dim,
