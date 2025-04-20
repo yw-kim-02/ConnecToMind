@@ -3,7 +3,7 @@ import torch
 def adamw(parameters, lr):
     return torch.optim.AdamW(parameters, lr=lr)
 
-def get_optimizer(diffusion_prior, lr, optimizer_name='adamw'):
+def get_optimizer(args, diffusion_prior):
 
     # '일반 weigth'만 weight_decay를 주고 'bias', 'LayerNorm.bias', 'LayerNorm.weight'에는 주지 않는다.
     no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
@@ -26,5 +26,5 @@ def get_optimizer(diffusion_prior, lr, optimizer_name='adamw'):
         }
     ]
 
-    if optimizer_name.lower() == 'adamw':
-        return adamw(opt_grouped_parameters, lr=lr)
+    if args.optimizer_name.lower() == 'adamw':
+        return adamw(opt_grouped_parameters, lr=args.lr)

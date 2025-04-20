@@ -24,7 +24,7 @@ def parse_args():
         help="Path to the BIDS image."
     )
     parser.add_argument(
-        '--mode', type=str, choices=['train', 'test'], default='test',
+        '--mode', type=str, choices=['train', 'test'], default='train',
         help="train과 test 구분"
     )
     parser.add_argument(
@@ -44,13 +44,21 @@ def parse_args():
     )
     ####################
 
-    ###### mindeye1 #####
+    ###### mindeye1 ######
     parser.add_argument(
         "--subj",type=int, default=1, choices=[1,2,5,7],
     )
     parser.add_argument(
         "--device",type=str,default="cuda",
         help='device',
+    )
+    parser.add_argument(
+        "--clip_size",type=int,default=768,
+        help='clip embedding 크기기',
+    )
+    parser.add_argument(
+        "--token_size",type=int,default=257,
+        help='vit patch 개수 + 1',
     )
     parser.add_argument(
         "--clip_variant",type=str,default="ViT-L/14",
@@ -65,6 +73,19 @@ def parse_args():
         "--hidden",action=argparse.BooleanOptionalAction,default=True,
         help="if True, CLIP embeddings will come from last hidden layer (e.g., 257x768 - Versatile Diffusion), rather than final layer",
     )
+    parser.add_argument(
+        "--vd_cache_dir", type=str, default='/nas/research/03-Neural_decoding/5-mindeye_code/pretrained_cache',
+        help="Where is cached Versatile Diffusion model; if not cached will download to this path",
+    )
+    ####################
+
+    ###### optimizer ######
+    parser.add_argument(
+        "--optimizer",type=str,default='adamw',
+    )
+    ####################
+
+    ###### scheduler ######
     parser.add_argument(
         "--optimizer",type=str,default='adamw',
     )
@@ -83,12 +104,19 @@ def parse_args():
         "--num_devices",type=int,default=2,
         help="number of devices",
     )
+    ####################
+
+    ###### trainer ######
     parser.add_argument(
-        "--vd_cache_dir", type=str, default='/nas/research/03-Neural_decoding/5-mindeye_code/pretrained_cache',
-        help="Where is cached Versatile Diffusion model; if not cached will download to this path",
+        "--mixup_pct",type=float,default=0.33,
+        help="BiMixCo에서 SoftCLIP로 넘어가는 ephoch",
+    )
+    parser.add_argument(
+        "--prior_loss_coefficient",type=float,default=0.3,
+        help="prior loss 계수",
     )
     ####################
-    
+
     
     parser.add_argument(
         "--wandb_log",action=argparse.BooleanOptionalAction,default=False,
@@ -102,10 +130,7 @@ def parse_args():
         "--wandb_project",type=str,default="stability",
         help="wandb project name",
     )
-    parser.add_argument(
-        "--mixup_pct",type=float,default=.33,
-        help="proportion of way through training when to switch from BiMixCo to SoftCLIP",
-    )
+    
     parser.add_argument(
         "--use_image_aug",action=argparse.BooleanOptionalAction,default=True,
         help="whether to use image augmentation",
@@ -122,9 +147,6 @@ def parse_args():
     parser.add_argument(
         "--plot_umap",action=argparse.BooleanOptionalAction,default=False,
         help="Plot UMAP plots alongside reconstructions",
-    )
-    parser.add_argument(
-        "--lr_scheduler_type",type=str,default='cycle',choices=['cycle','linear'],
     )
     parser.add_argument(
         "--ckpt_saving",action=argparse.BooleanOptionalAction,default=True,

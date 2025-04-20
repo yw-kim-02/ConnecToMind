@@ -26,7 +26,6 @@ from dalle2_pytorch.dalle2_pytorch import RotaryEmbedding, CausalTransformer, Si
 from diffusers.models.vae import Decoder
 
 # get model
-from args import parse_args
 import utils
 from data import stack_sub1_dataset
 from diffusers import VersatileDiffusionDualGuidedPipeline, UniPCMultistepScheduler
@@ -45,23 +44,26 @@ class Clipper(torch.nn.Module):
         else:
             self.clip_size = (224,224)
 
-        # image preprocess 변수
+        # clip preporcess를 custom으로 사용함
         self.preprocess = None # object를 변수로 저장
         self.mean = np.array([0.48145466, 0.4578275, 0.40821073]) # OpenAI CLIP이 학습한 이미지 데이터 셋의 평균
         self.std = np.array([0.26862954, 0.26130258, 0.27577711]) # OpenAI CLIP이 학습한 이미지 데이터 셋의 표준편차
-        self.normalize = transforms.Normalize(self.mean, self.std)
+        preprocess = transforms.Compose([
+            transforms.Resize(size=self.clip_size[0], interpolation=transforms.InterpolationMode.BICUBIC),
+            transforms.CenterCrop(size=self.clip_size),
+            transforms.Normalize(mean=self.mean, std=self.std)
+        ])
+        self.preprocess = preprocess # object를 변수로 저장
 
         # embedding preprocess 변수
         self.clamp_embs = clamp_embs # embdding 후처리 유무 ex) -1.5 ~ 1.5 범위로 제한
         self.norm_embs = norm_embs # embdding mromalization 유무
         
-        
         # "RN50", "ViT-L/14", "ViT-B/32", "RN50x64" 중에 모델이 없으면 오류메세지 출력
         assert clip_variant in ("RN50", "ViT-L/14", "ViT-B/32", "RN50x64"), "clip_variant must be one of RN50, ViT-L/14, ViT-B/32, RN50x64" # assert문은 조건을 만족하지 않을 때 출력
         print(clip_variant, device)
 
-        
-        # 1번 clip 모델 load 
+        # 1번 clip 모델 load(high level)
         if clip_variant=="ViT-L/14" and hidden_state:
             image_encoder = CLIPVisionModelWithProjection.from_pretrained("openai/clip-vit-large-patch14").eval() # pre-train(transformers 라이브러리의 CLIP Vision 모델)하여 frozen 함
             image_encoder = image_encoder.to(device)
@@ -73,14 +75,7 @@ class Clipper(torch.nn.Module):
             raise Exception("ViT-L/14에서만 hidden_state 처리 가능")
         
         # 2번 clip 모델 load
-        clip_model, preprocess = clip.load(clip_variant, device=device)
-        # clip preporcess를 custom으로 사용함
-        preprocess = transforms.Compose([
-            transforms.Resize(size=self.clip_size[0], interpolation=transforms.InterpolationMode.BICUBIC),
-            transforms.CenterCrop(size=self.clip_size),
-            transforms.Normalize(mean=self.mean, std=self.std)
-        ])
-        self.preprocess = preprocess # object를 변수로 저장
+        clip_model, _ = clip.load(clip_variant, device=device)
         clip_model.eval() 
         # frozen
         for param in clip_model.parameters():
@@ -125,7 +120,7 @@ class Clipper(torch.nn.Module):
     
     
 class BrainNetwork(nn.Module):
-    def __init__(self, in_dim=15724, out_dim=768, clip_size=768, h=4096, n_blocks=4, norm_type='ln', act_first=False):
+    def __init__(self, in_dim=15724, out_dim=257*768, clip_size=768, h=4096, n_blocks=4, norm_type='ln', act_first=False):
         super().__init__()
         
         norm_func = partial(nn.BatchNorm1d, num_features=h) if norm_type == 'bn' else partial(nn.LayerNorm, normalized_shape=h) # batch norm과 layer norm에 인자(h)를 미리 고정
@@ -148,7 +143,7 @@ class BrainNetwork(nn.Module):
                 nn.Dropout(0.15)
             ) for _ in range(n_blocks) # 4개의 block 사용 -> sequential 4번 사용
         ])
-        self.lin1 = nn.Linear(h, out_dim, bias=True) # 4096 -> 768
+        self.lin1 = nn.Linear(h, out_dim, bias=True) # 4096 -> (257 * 768)
         
         # contrastive learning 할 때 사용
         # clip_size -> 고차원 공간(2048) -> clip_size
@@ -166,7 +161,7 @@ class BrainNetwork(nn.Module):
         
     def forward(self, x):
         '''
-        x(MLP backbone): fmri -> mlp - shape: [batch, 768]
+        x(MLP backbone): fmri -> mlp - shape: [batch, (257*768)]
         x(MLP projector): fmri -> mlp -> mlp - shape: ([batch, 768], [batch, 257, 768])
         '''
         # fMRI volume 그대로 들어올 때
@@ -191,16 +186,19 @@ class BrainNetwork(nn.Module):
 # BrainNetwork과 versatileDiffusionPriorNetwork가 인자로 들어감
 class BrainDiffusionPrior(DiffusionPrior):
     def __init__(self, *args, **kwargs):
+        voxel2clip = kwargs.pop('voxel2clip', None) # 부모(DiffusionPrior)는 voxel2clip을 모르기 때문에 빼놓음
         super().__init__(*args, **kwargs)
+        self.voxel2clip = voxel2clip
 
     def forward(self, text_embed = None, image_embed = None, *args, **kwargs):
         '''
         loss: loss(prediction x_0, target x_0) - shape: Scala
-        pred: x_t -> x_t-1 denoise한 결과 - shape: [batch_size, embedding_dim]
+        pred: x_t -> x_t-1 denoise한 결과 - shape: [batch, 768]
         '''
         batch, device = image_embed.shape[0], image_embed.device
         times = self.noise_scheduler.sample_random_times(batch)
 
+        # ex) ex: 1.0 ~ 2.5 -> prediction 후 self.image_embed_scale을 나눠줘야 함
         image_embed *= self.image_embed_scale
 
         # calculate forward loss
@@ -212,7 +210,7 @@ class BrainDiffusionPrior(DiffusionPrior):
     def p_losses(self, image_embed, times, text_embed=None, noise = None):
         '''
         loss: loss(prediction x_0, target x_0) - shape: Scala
-        pred: x_t -> x_t-1 denoise한 결과 - shape: [batch_size, embedding_dim]
+        pred: x_t -> x_t-1 denoise한 결과 - shape: [batch, 768]
         '''
         # noise 정의
         noise = default(noise, lambda: torch.randn_like(image_embed)) 
@@ -288,7 +286,7 @@ class BrainDiffusionPrior(DiffusionPrior):
         return pred, x_start
 
 
-# dalle2에서 입실론을 뽑는 layer(이름이 versatile인 이유는 모르겠음)
+# dalle2의 denoising에서 입실론을 뽑는 class(이름이 versatile인 이유는 모르겠음) -> DiffusionPrior class에서 net의 인자로 사용
 class VersatileDiffusionPriorNetwork(nn.Module):
     def __init__(
         self,
@@ -778,8 +776,7 @@ class BrainDiffusionPriorOld(DiffusionPrior):
         return diffusion_prior
 
 
-def get_model_highlevel():
-    args = parse_args()
+def get_model_highlevel(args):
 
     if args.subj == 1:
         num_voxels = 15724
@@ -797,22 +794,20 @@ def get_model_highlevel():
         num_voxels = 12682
     elif args.subj == 8:
         num_voxels = 14386
-
-    clip_size = 768
     
     #### clip 정의 ####
     clip_extractor = Clipper(lip_variant=args.clip_variant, norm_embs=args.norm_embs, hidden_state=args.hidden_state, device=args.device)
     
     #### brain network 정의 ####
-    out_dim = 257 * clip_size
-    voxel2clip_kwargs = dict(in_dim=num_voxels, out_dim=out_dim, clip_size=clip_size)
+    out_dim = args.token_size * args.clip_size # 257 * 768
+    voxel2clip_kwargs = dict(in_dim=num_voxels, out_dim=out_dim, clip_size=args.clip_size)
     voxel2clip = BrainNetwork(**voxel2clip_kwargs)
 
     #### difussion prior 정의 ####
-    out_dim = clip_size # 모델 거치면 257 * 768 나옴
+    out_dim = args.clip_size # 모델 거치면 257 * 768 나옴
     depth = 6 # transformer의 layer 수 -> versatile의 한 step의 layer
     dim_head = 64 # head당 dim
-    heads = clip_size//dim_head # attention head 수
+    heads = args.clip_size//dim_head # attention head 수
     timesteps = 100 # difusion step 수 
     guidance_scale = 3.5 # cfg inference할 때 사용 
     
@@ -828,13 +823,13 @@ def get_model_highlevel():
 
     # VersatileDiffusionPriorNetwork + BrainNetwork가 인자로 들어감
     diffusion_prior = BrainDiffusionPrior(
-        net=prior_network,
+        net=prior_network, # VersatileDiffusionPriorNetwork(필수 모델) -> nn.Module이라 학습 됨
         image_embed_dim=out_dim,
         condition_on_text_encodings=False,
         timesteps=timesteps,
         cond_drop_prob=0.2,
         image_embed_scale=None,
-        voxel2clip=voxel2clip,
+        voxel2clip=voxel2clip, # BrainNetwork(추가 모델) -> nn.Module이라 학습 됨
     ).to(args.device)
 
     #### versatile difussion 정의(unet, vae, noise scheduler) ####
@@ -870,31 +865,13 @@ def get_model_highlevel():
     vae = vd_pipe.vae
     noise_scheduler = vd_pipe.scheduler
 
-    #### optimizer 정의 ####
-    optimizer = get_optimizer(diffusion_prior, lr=args.max_lr, optimizer_name=args.optimizer)
-
-    #### scheduler(train만 사용) 정의 ####
-    train_dataset, _ = stack_sub1_dataset()
-    num_train = len(train_dataset)//3 # 저자는 같은 image 3번 본것을 1번으로 침
-    lr_scheduler = get_scheduler(
-        optimizer=optimizer,
-        scheduler_type=args.lr_scheduler_type,
-        num_epochs=args.num_epochs,
-        num_train=num_train,
-        batch_size=args.batch_size,
-        num_devices=args.num_devices,
-        max_lr=args.max_lr
-    )
-
     models = {
         "clip": clip_extractor,
         "diffusion_prior": diffusion_prior,
-        "vd_pipe": vd_pipe, # # inference에서만 사용
-        "unet": unet,
-        "vae": vae,
+        "vd_pipe": vd_pipe, # inference에서만 사용
+        "unet": unet, # inference에서만 사용
+        "vae": vae, # inference에서만 사용
         "noise_scheduler": noise_scheduler, # inference에서만 사용
-        "optimizer": optimizer,
-        "scheduler": lr_scheduler,
     }
 
     return models

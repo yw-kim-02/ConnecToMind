@@ -15,8 +15,6 @@ from PIL import Image
 import nibabel as nib
 
 import utils
-from args import parse_args
-
 
 class TrainDataset(Dataset):
     def __init__(self, fmri_path, tsv_path, image_path, transform, train=1):
@@ -24,7 +22,7 @@ class TrainDataset(Dataset):
         self.tsv_path = tsv_path
         self.image_path = image_path
         self.train = train  # 'train' or 'test'
-        self.transform = transform
+        self.transform = transform # PIL.Image -> tensor
 
         # train & test 각각 index 뽑아두기
         df = pd.read_csv(self.tsv_path, sep='\t')
@@ -56,7 +54,7 @@ class TestDataset(Dataset):
     def __init__(self, fmri_info_list, image_dir, transform):
         self.fmri_info_list = fmri_info_list  # 리스트: {'image_id': str, 'fmri_volumes': [(path1, idx1), (path2, idx2), (path3, idx3)]}
         self.image_dir = image_dir
-        self.transform = transform
+        self.transform = transform # PIL.Image -> tensor
         
     def __len__(self):
         return len(self.fmri_info_list)
@@ -82,8 +80,7 @@ class TestDataset(Dataset):
 
         return fmri_avg, image
 
-def sub1_train_dataset():
-    args = parse_args()
+def sub1_train_dataset(args):
 
     root_dir = args.root_dir
     fmri_dir = args.fmri_dir
@@ -110,8 +107,7 @@ def sub1_train_dataset():
     
     return train_dataset
 
-def sub1_test_dataset():
-    args = parse_args()
+def sub1_test_dataset(args):
 
     root_dir = args.root_dir
     fmri_dir = args.fmri_dir
@@ -170,19 +166,18 @@ def sub1_test_dataset():
 
     return test_dataset
 
-def get_dataloaders():
-    args = parse_args()
+def get_dataloader(args):
 
     # 시드 고정
     utils.seed_everything(args.seed) 
     
     if args.mode == 'train':
-        train_dataset = sub1_train_dataset()
+        train_dataset = sub1_train_dataset(args)
         train_loader = DataLoader(train_dataset, batch_size=args.batch_size, num_workers=args.num_workers, pin_memory=True, shuffle=args.is_shuffle)
         return train_loader
     
     if args.mode == 'test':
-        test_dataset = sub1_test_dataset()
+        test_dataset = sub1_test_dataset(args)
         test_loader = DataLoader(test_dataset, batch_size=args.batch_size, num_workers=args.num_workers, pin_memory=True, shuffle=False)
         return test_loader
     
