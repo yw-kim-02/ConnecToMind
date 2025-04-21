@@ -87,9 +87,6 @@ def parse_args():
 
     ###### scheduler ######
     parser.add_argument(
-        "--optimizer",type=str,default='adamw',
-    )
-    parser.add_argument(
         "--max_lr",type=float,default=3e-4,
     )
     parser.add_argument(

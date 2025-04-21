@@ -16,17 +16,25 @@ import nibabel as nib
 
 import utils
 
-class TrainDataset(Dataset):
-    def __init__(self, fmri_path, tsv_path, image_path, transform, train=1):
+class TrainDataset(Dataset): # ses단위로 실행
+    def __init__(self, fmri_path, tsv_path, image_path, mask_path, transform, train=1):
         self.fmri_path = fmri_path
         self.tsv_path = tsv_path
         self.image_path = image_path
+        self.mask_path = mask_path
         self.train = train  # 'train' or 'test'
         self.transform = transform # PIL.Image -> tensor
 
         # train & test 각각 index 뽑아두기
         df = pd.read_csv(self.tsv_path, sep='\t')
         self.valid_indices = df[df['train'] == train].index.tolist()
+
+        # sub마다 maskload(shape: (Z, Y, X))
+        sub = re.search(r"(sub-\d+)", self.fmri_path).group(1)
+        mask_file = os.path.join(self.mask_path, f"{sub}_nsdgeneral.nii.gz")
+        mask_data = nib.load(mask_file).get_fdata()
+        mask_bool = (mask_data == 1)  # mask에 해당하는 부분 true 
+        self.mask_tensor = torch.tensor(mask_bool, dtype=torch.bool) # tensor로 변환
 
     def __len__(self):
         return len(self.valid_indices)
@@ -37,6 +45,9 @@ class TrainDataset(Dataset):
         # 해당 볼륨만 로드 (4D → 3D)
         fmri = nib.load(self.fmri_path).get_fdata()
         fmri_vol = torch.tensor(fmri[:, :, :, actual_idx]).float()
+
+        # 마스크 적용: (Z, Y, X) → (N,)
+        fmri_vol = fmri_vol[self.mask_tensor]
 
         # image column 한 행만 로딩
         row = pd.read_csv(self.tsv_path, sep='\t', skiprows=range(1, actual_idx + 1), nrows=1)
@@ -50,11 +61,20 @@ class TrainDataset(Dataset):
 
         return fmri_vol, image
 
-class TestDataset(Dataset):
-    def __init__(self, fmri_info_list, image_dir, transform):
+class TestDataset(Dataset): # sub단위로 실행
+    def __init__(self, fmri_info_list, image_path, mask_path, transform):
         self.fmri_info_list = fmri_info_list  # 리스트: {'image_id': str, 'fmri_volumes': [(path1, idx1), (path2, idx2), (path3, idx3)]}
-        self.image_dir = image_dir
+        self.image_path = image_path
+        self.mask_path = mask_path
         self.transform = transform # PIL.Image -> tensor
+
+        # sub마다 maskload(shape: (Z, Y, X))
+        sub = re.search(r"(sub-\d+)", self.fmri_info_list[0]['fmri_volumes'][0][0]).group(1)
+        mask_file = os.path.join(self.mask_path, f"{sub}_nsdgeneral.nii.gz")
+        mask_data = nib.load(mask_file).get_fdata()
+        mask_bool = (mask_data == 1)  # mask에 해당하는 부분 true 
+        self.mask_tensor = torch.tensor(mask_bool, dtype=torch.bool) # tensor로 변환
+
         
     def __len__(self):
         return len(self.fmri_info_list)
@@ -68,19 +88,21 @@ class TestDataset(Dataset):
         for path, i in fmri_list:
             data = nib.load(path).get_fdata()
             fmri_vol = torch.tensor(data[:, :, :, i]).float()
+            # 마스크 적용: (Z, Y, X) → (N,)
+            fmri_vol = fmri_vol[self.mask_tensor]  
             fmri_vols.append(fmri_vol)
 
         # idx당 하나의 volume 생성
         fmri_avg = torch.stack(fmri_vols).mean(0)  # mean(0): voxel-wise 평균 -> 결과 shape(X, Y, Z)
 
-        image_path = os.path.join(self.image_dir, image_id + '.jpg')
+        image_path = os.path.join(self.image_path, image_id + '.jpg')
         image = Image.open(image_path).convert('RGB')
         if self.transform:
             image = self.transform(image)
 
         return fmri_avg, image
 
-def sub1_train_dataset(args):
+def sub1_train_dataset(args): # ses단위로 실행
 
     root_dir = args.root_dir
     fmri_dir = args.fmri_dir
@@ -99,15 +121,16 @@ def sub1_train_dataset(args):
         fmri_path = f"{root_dir}/{fmri_dir}/{fmri_detail_dir}/sub-01/ses-{ses}/func/sub-01_ses-{ses}_desc-betaroizscore.nii.gz"
         tsv_path = f"{root_dir}/{fmri_dir}/{fmri_detail_dir}/sub-01/ses-{ses}/func/sub-01_ses-{ses}_task-image_events.tsv"
         image_path = f"{root_dir}/{image_dir}"
+        mask_path = f"{root_dir}/{fmri_dir}/{fmri_detail_dir}/sub-01"
         
-        train_datasets.append(TrainDataset(fmri_path, tsv_path, image_path, transform, train=1))
+        train_datasets.append(TrainDataset(fmri_path, tsv_path, image_path, mask_path, transform, train=1))
 
     # Dataset 합침
     train_dataset = ConcatDataset(train_datasets)
     
     return train_dataset
 
-def sub1_test_dataset(args):
+def sub1_test_dataset(args): # sub단위로 실행
 
     root_dir = args.root_dir
     fmri_dir = args.fmri_dir
@@ -162,7 +185,10 @@ def sub1_test_dataset(args):
             'fmri_volumes': fmri_volumes
         })
     
-    test_dataset = TestDataset(averaged_list, os.path.join(root_dir, image_dir), transform)
+    image_path = f"{root_dir}/{image_dir}"
+    mask_path = f"{root_dir}/{fmri_dir}/{fmri_detail_dir}/sub-01"
+
+    test_dataset = TestDataset(averaged_list, image_path, mask_path, transform)
 
     return test_dataset
 
