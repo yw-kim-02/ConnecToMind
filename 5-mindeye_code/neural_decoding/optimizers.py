@@ -26,5 +26,5 @@ def get_optimizer(args, diffusion_prior):
         }
     ]
 
-    if args.optimizer_name.lower() == 'adamw':
-        return adamw(opt_grouped_parameters, lr=args.lr)
+    if args.optimizer.lower() == 'adamw':
+        return adamw(opt_grouped_parameters, lr=args.max_lr)

@@ -25,7 +25,7 @@ class TrainDataset(Dataset): # ses단위로 실행
         self.train = train  # 'train' or 'test'
         self.transform = transform # PIL.Image -> tensor
 
-        # train & test 각각 index 뽑아두기
+        # train index 뽑아두기
         df = pd.read_csv(self.tsv_path, sep='\t')
         self.valid_indices = df[df['train'] == train].index.tolist()
 
@@ -34,7 +34,7 @@ class TrainDataset(Dataset): # ses단위로 실행
         mask_file = os.path.join(self.mask_path, f"{sub}_nsdgeneral.nii.gz")
         mask_data = nib.load(mask_file).get_fdata()
         mask_bool = (mask_data == 1)  # mask에 해당하는 부분 true 
-        self.mask_tensor = torch.tensor(mask_bool, dtype=torch.bool) # tensor로 변환
+        self.mask_tensor = torch.tensor(mask_bool).nonzero(as_tuple=True) # tensor로 변환 + 위치로 저장 -> 속도 빠름
 
     def __len__(self):
         return len(self.valid_indices)
@@ -43,7 +43,7 @@ class TrainDataset(Dataset): # ses단위로 실행
         actual_idx = self.valid_indices[idx]  # idx -> 기존 데이터에서의 진짜 인덱스
 
         # 해당 볼륨만 로드 (4D → 3D)
-        fmri = nib.load(self.fmri_path).get_fdata()
+        fmri = nib.load(self.fmri_path).dataobj
         fmri_vol = torch.tensor(fmri[:, :, :, actual_idx]).float()
 
         # 마스크 적용: (Z, Y, X) → (N,)
@@ -73,7 +73,7 @@ class TestDataset(Dataset): # sub단위로 실행
         mask_file = os.path.join(self.mask_path, f"{sub}_nsdgeneral.nii.gz")
         mask_data = nib.load(mask_file).get_fdata()
         mask_bool = (mask_data == 1)  # mask에 해당하는 부분 true 
-        self.mask_tensor = torch.tensor(mask_bool, dtype=torch.bool) # tensor로 변환
+        self.mask_tensor = torch.tensor(mask_bool).nonzero(as_tuple=True) # tensor로 변환 + 위치로 저장 -> 속도 빠름
 
         
     def __len__(self):
@@ -86,7 +86,7 @@ class TestDataset(Dataset): # sub단위로 실행
         
         fmri_vols = []
         for path, i in fmri_list:
-            data = nib.load(path).get_fdata()
+            data = nib.load(path).dataobj
             fmri_vol = torch.tensor(data[:, :, :, i]).float()
             # 마스크 적용: (Z, Y, X) → (N,)
             fmri_vol = fmri_vol[self.mask_tensor]  

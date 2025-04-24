@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 import PIL
 from functools import partial
+import glob
 
 # for clip
 import clip # OpenAI CLIP (RN50, ViT-L/14 등)
@@ -27,7 +28,6 @@ from diffusers.models.vae import Decoder
 
 # get model
 import utils
-from data import stack_sub1_dataset
 from diffusers import VersatileDiffusionDualGuidedPipeline, UniPCMultistepScheduler
 from diffusers.models import DualTransformer2DModel
 from optimizers import get_optimizer
@@ -796,7 +796,7 @@ def get_model_highlevel(args):
         num_voxels = 14386
     
     #### clip 정의 ####
-    clip_extractor = Clipper(lip_variant=args.clip_variant, norm_embs=args.norm_embs, hidden_state=args.hidden_state, device=args.device)
+    clip_extractor = Clipper(clip_variant=args.clip_variant, norm_embs=args.norm_embs, hidden_state=args.hidden, device=args.device)
     
     #### brain network 정의 ####
     out_dim = args.token_size * args.clip_size # 257 * 768
@@ -836,7 +836,7 @@ def get_model_highlevel(args):
     try:
         vd_pipe =  VersatileDiffusionDualGuidedPipeline.from_pretrained(args.vd_cache_dir).to(args.device)
     except: # 처음에는 모델 불러와야 함
-        vd_pipe =  VersatileDiffusionDualGuidedPipeline.from_pretrained("shi-labs/versatile-diffusion", cache_dir = args.vd_cache_dir).to('cpu')
+        vd_pipe =  VersatileDiffusionDualGuidedPipeline.from_pretrained("shi-labs/versatile-diffusion", cache_dir = args.vd_cache_dir).to(args.device)
     
     # versatile difussion의 unet 정의
     vd_pipe.image_unet.eval()
@@ -859,7 +859,9 @@ def get_model_highlevel(args):
     vd_pipe.vae.requires_grad_(False)
 
     # versatile difussion의 scheduler 정의
-    vd_pipe.scheduler = UniPCMultistepScheduler.from_pretrained(args.vd_cache_dir, subfolder="scheduler") # subfolder에서 parameter 가져옴
+    scheduler_path = glob.glob(os.path.join(args.vd_cache_dir, "models--shi-labs--versatile-diffusion", "snapshots", "*", "scheduler"))[0]
+    vd_pipe.scheduler = UniPCMultistepScheduler.from_pretrained(scheduler_path) # subfolder에서 parameter 가져옴
+    print(vd_pipe.scheduler)
 
     unet = vd_pipe.image_unet
     vae = vd_pipe.vae

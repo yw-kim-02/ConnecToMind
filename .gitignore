@@ -4,3 +4,6 @@
 4-image/
 
 __pycache__/
+wandb/
+pretrained_cache/
+logdir/

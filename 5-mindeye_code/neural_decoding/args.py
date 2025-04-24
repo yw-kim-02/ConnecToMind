@@ -31,11 +31,11 @@ def parse_args():
         "--seed",type=int,default=42,
     )
     parser.add_argument(
-        "--batch_size", type=int, default=4,
+        "--batch_size", type=int, default=24,
         help="Batch size can be increased by 10x if only training v2c and not diffusion prior",
     )
     parser.add_argument(
-        "--num_workers", type=str, default=0,
+        "--num_workers", type=str, default=8,
         help="multi-processing in dataloader",
     )
     parser.add_argument(
@@ -90,7 +90,7 @@ def parse_args():
         "--max_lr",type=float,default=3e-4,
     )
     parser.add_argument(
-        "--scheduler",type=str,default='cycle',
+        "--scheduler_type",type=str,default='cycle',
         choices=['cycle','linear'],
     )
     parser.add_argument(
@@ -98,7 +98,7 @@ def parse_args():
         help="epoch 개수",
     )
     parser.add_argument(
-        "--num_devices",type=int,default=2,
+        "--num_devices",type=int,default=1,
         help="number of devices",
     )
     ####################
@@ -111,6 +111,18 @@ def parse_args():
     parser.add_argument(
         "--prior_loss_coefficient",type=float,default=0.3,
         help="prior loss 계수",
+    )
+    parser.add_argument(
+        "--code_dir", type=str, default="5-mindeye_code",
+        help="Path to the code."
+    )
+    parser.add_argument(
+        "--output_dir", type=str, default="output",
+        help="Path to the output."
+    )
+    parser.add_argument(
+        "--model_name", type=str, default="mindeye1",
+        help="모델 이름"
     )
     ####################
 
@@ -133,18 +145,8 @@ def parse_args():
         help="whether to use image augmentation",
     )
 
-    parser.add_argument(
-        "--prior",action=argparse.BooleanOptionalAction,default=True,
-        help="if False, will only use CLIP loss and ignore diffusion prior",
-    )
-    parser.add_argument(
-        "--v2c",action=argparse.BooleanOptionalAction,default=True,
-        help="if False, will only use diffusion prior loss",
-    )
-    parser.add_argument(
-        "--plot_umap",action=argparse.BooleanOptionalAction,default=False,
-        help="Plot UMAP plots alongside reconstructions",
-    )
+
+
     parser.add_argument(
         "--ckpt_saving",action=argparse.BooleanOptionalAction,default=True,
     )
