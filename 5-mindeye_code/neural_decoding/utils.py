@@ -124,10 +124,9 @@ def get_unique_path(base_path):
 def reconstruction(
     image, voxel,
     clip_extractor, unet=None, vae=None, noise_scheduler=None,
-    voxel2clip_cls=None,
-    diffusion_priors=None,
+    diffusion_prior=None,
     text_token = None,
-    img_lowlevel = None,
+    img_lowlevel = None, # low level image
     num_inference_steps = 50,
     recons_per_sample = 1,
     guidance_scale = 7.5,
@@ -135,8 +134,7 @@ def reconstruction(
     timesteps_prior = 100,
     seed = 0,
     plotting=True,
-    verbose=False,
-    img_variations=False,
+    img_variations=False, # false -> high level이라는 의미
     num_retrieved=16,
 ):
     
@@ -155,23 +153,23 @@ def reconstruction(
     generator = torch.Generator(device=device)
     generator.manual_seed(seed)
 
-
     brain_clip_embeddings0, proj_embeddings = diffusion_prior.voxel2clip(voxel)
-
-    brain_clip_embeddings0 = brain_clip_embeddings0.view(len(voxel),-1,768) if isinstance(clip_extractor,Clipper) else brain_clip_embeddings0.view(len(voxel),-1,1024)
+    brain_clip_embeddings0 = brain_clip_embeddings0.view(len(voxel),-1,768) # [B, (257 * 768)] -> [B, 257, 768]
     
     if recons_per_sample>0:
-        if not img_variations:
-            brain_clip_embeddings0 = brain_clip_embeddings0.repeat(recons_per_sample, 1, 1)
-            try:
-                brain_clip_embeddings = diffusion_prior.p_sample_loop(brain_clip_embeddings0.shape, 
-                                        text_cond = dict(text_embed = brain_clip_embeddings0), 
-                                        cond_scale = 1., timesteps = timesteps_prior,
-                                        generator=generator) 
-            except:
-                brain_clip_embeddings = diffusion_prior.p_sample_loop(brain_clip_embeddings0.shape, 
-                                        text_cond = dict(text_embed = brain_clip_embeddings0), 
-                                        cond_scale = 1., timesteps = timesteps_prior)
+        # high level
+        if not img_variations:  
+            brain_clip_embeddings0 = brain_clip_embeddings0.repeat(recons_per_sample, 1, 1) # ex) [B×(recons_per_sample), 257, 768]
+
+            # diffusion prior 결과
+            brain_clip_embeddings = diffusion_prior.p_sample_loop(brain_clip_embeddings0.shape, 
+                                    text_cond = dict(text_embed = brain_clip_embeddings0), 
+                                    cond_scale = 1., timesteps = timesteps_prior,generator=generator) 
+
+            # cls token norm을 사용하여 모든 patch normalization
+            for samp in range(len(brain_clip_embeddings)):
+                brain_clip_embeddings[samp] = brain_clip_embeddings[samp]/(brain_clip_embeddings[samp,0].norm(dim=-1).reshape(-1, 1, 1) + 1e-6)                        
+        # low level
         else:
             brain_clip_embeddings0 = brain_clip_embeddings0.view(-1,768)
             brain_clip_embeddings0 = brain_clip_embeddings0.repeat(recons_per_sample, 1)
@@ -179,59 +177,30 @@ def reconstruction(
                                         text_cond = dict(text_embed = brain_clip_embeddings0), 
                                         cond_scale = 1., timesteps = 1000, #1000 timesteps used from nousr pretraining
                                         generator=generator)
-        if brain_clip_embeddings_sum is None:
-            brain_clip_embeddings_sum = brain_clip_embeddings
-        else:
-            brain_clip_embeddings_sum += brain_clip_embeddings
-
-        # average embeddings for all diffusion priors
-        if recons_per_sample>0:
-            brain_clip_embeddings = brain_clip_embeddings_sum / len(diffusion_priors)
-    
-    if voxel2clip_cls is not None:
-        _, cls_embeddings = voxel2clip_cls(voxel.to(device).float())
-    else:
-        cls_embeddings = proj_embeddings
-    if verbose: print("cls_embeddings.",cls_embeddings.shape)
-    
-    if retrieve:
-        image_retrieved = query_laion(emb=cls_embeddings.flatten(),groundtruth=None,num=num_retrieved,
-                                   clip_extractor=clip_extractor,device=device,verbose=verbose)          
-
-    if retrieve and recons_per_sample==0:
-        brain_recons = torch.Tensor(image_retrieved)
-        brain_recons.to(device)
-    elif recons_per_sample > 0:
-        if not img_variations:
-            for samp in range(len(brain_clip_embeddings)):
-                brain_clip_embeddings[samp] = brain_clip_embeddings[samp]/(brain_clip_embeddings[samp,0].norm(dim=-1).reshape(-1, 1, 1) + 1e-6)
-        else:
             brain_clip_embeddings = brain_clip_embeddings.unsqueeze(1)
-        
-        input_embedding = brain_clip_embeddings#.repeat(recons_per_sample, 1, 1)
-        if verbose: print("input_embedding",input_embedding.shape)
-
-        if text_token is not None:
-            prompt_embeds = text_token.repeat(recons_per_sample, 1, 1)
-        else:
-            prompt_embeds = torch.zeros(len(input_embedding),77,768)
-        if verbose: print("prompt!",prompt_embeds.shape)
+    
+        # versatile difussion에 사용할 embedding 정의
+        input_embedding = brain_clip_embeddings
+        prompt_embeds = torch.zeros(len(input_embedding),77,768) # 사용하지 않을 거지만 difussion.unet.DualTransformer2DModel을 사용하기 위해 필요 -> 모두 0으로 채운 것을 넣기
 
         if do_classifier_free_guidance:
             input_embedding = torch.cat([torch.zeros_like(input_embedding), input_embedding]).to(device).to(unet.dtype)
-            prompt_embeds = torch.cat([torch.zeros_like(prompt_embeds), prompt_embeds]).to(device).to(unet.dtype)
+            prompt_embeds = torch.cat([torch.zeros_like(prompt_embeds), prompt_embeds]).to(device).to(unet.dtype) # [2 * b, 77, 768]
 
-        # dual_prompt_embeddings
+        # high level
         if not img_variations:
-            input_embedding = torch.cat([prompt_embeds, input_embedding], dim=1)
+            # dual_prompt_embeddings
+            input_embedding = torch.cat([prompt_embeds, input_embedding], dim=1) # [2 * b, 257+77, 768]
 
-        # 4. Prepare timesteps
+            # CFG로 인해 batch size가 2배 늘어난 것을 2배 나눠야 한다
+            batch_size = input_embedding.shape[0] // 2 
+            shape = (batch_size, unet.in_channels, height // vae_scale_factor, width // vae_scale_factor) # [b, 257+77, 768]
+
+        # timesteps 정의
         noise_scheduler.set_timesteps(num_inference_steps=num_inference_steps, device=device)
 
-        # 5b. Prepare latent variables
-        batch_size = input_embedding.shape[0] // 2 # divide by 2 bc we doubled it for classifier-free guidance
-        shape = (batch_size, unet.in_channels, height // vae_scale_factor, width // vae_scale_factor)
-        if img_lowlevel is not None: # use img_lowlevel for img2img initialization
+        # starting low level image vs starting pure noise
+        if img_lowlevel is not None: # low level image에서 시작
             init_timestep = min(int(num_inference_steps * img2img_strength), num_inference_steps)
             t_start = max(num_inference_steps - init_timestep, 0)
             timesteps = noise_scheduler.timesteps[t_start:]
@@ -248,40 +217,35 @@ def reconstruction(
                                 generator=generator, dtype=input_embedding.dtype)
             init_latents = noise_scheduler.add_noise(init_latents, noise, latent_timestep)
             latents = init_latents
-        else:
+        else: # pure noise에서 시작
             timesteps = noise_scheduler.timesteps
             latents = torch.randn([recons_per_sample, 4, 64, 64], device=device,
                                   generator=generator, dtype=input_embedding.dtype)
             latents = latents * noise_scheduler.init_noise_sigma
 
-        # 7. Denoising loop
+        # Denoising loop
         for i, t in enumerate(timesteps):
-            # expand the latents if we are doing classifier free guidance
+            # cfg를 사용하기 위해 gaussian noise를 condition용 + uncondition용을 만든다
             latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
             latent_model_input = noise_scheduler.scale_model_input(latent_model_input, t)
-
-            if verbose: print("latent_model_input", latent_model_input.shape)
-            if verbose: print("input_embedding", input_embedding.shape)
+            
+            # noise 예측
             noise_pred = unet(latent_model_input, t, encoder_hidden_states=input_embedding).sample
 
             # perform guidance
             if do_classifier_free_guidance:
-                noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-                noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
-                
-                # TODO:
-                # noise_pred = dynamic_cfg(noise_pred_uncond, noise_pred_text, guidance_scale)
+                noise_pred_uncond, noise_pred_context = noise_pred.chunk(2)
+                noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_context - noise_pred_uncond)
 
-            # compute the previous noisy sample x_t -> x_t-1
+            # compute denoise(x_t) -> x_t-1
             latents = noise_scheduler.step(noise_pred, t, latents).prev_sample
+        # vae decoder를 통해 image로 변환
         recons = decode_latents(latents,vae).detach().cpu()
-
-        brain_recons = recons.unsqueeze(0)
-
-    if verbose: print("brain_recons",brain_recons.shape)
+        brain_recons = recons.unsqueeze(0) # [batch_size, 3, height, width] -> [1, batch_size, 3, height, width]
+        print("brain_recons",brain_recons.shape)
                     
     # pick best reconstruction out of several
-    best_picks = np.zeros(n_samples_save).astype(np.int16)
+    best_picks = np.zeros(1).astype(np.int16)
     
     if retrieve==False:
         v2c_reference_out = nn.functional.normalize(proj_embeddings.view(len(proj_embeddings),-1),dim=-1)

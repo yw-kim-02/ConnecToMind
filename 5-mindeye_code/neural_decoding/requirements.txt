@@ -13,4 +13,3 @@ pip install git+https://github.com/lucidrains/dalle2-pytorch.git
 pip install diffusers==0.14.0
 pip uninstall huggingface_hub -y
 pip install huggingface_hub==0.21.4
-pip install gc

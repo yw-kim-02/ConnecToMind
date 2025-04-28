@@ -6,6 +6,8 @@ import wandb
 
 import numpy as np
 import torch
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
 import torch.nn as nn
 from torch.cuda.amp import autocast, GradScaler
 from torch.profiler import profile, record_function, ProfilerActivity
@@ -30,17 +32,6 @@ def train(args, data, models, optimizer, lr_scheduler):
 
     # log list
     losses, lrs = [], []
-
-    # 병목 추적
-    # profiler = torch.profiler.profile(
-    #     schedule=torch.profiler.schedule(wait=1, warmup=1, active=3, repeat=1),
-    #     on_trace_ready=torch.profiler.tensorboard_trace_handler("./logdir"),
-    #     record_shapes=True,
-    #     profile_memory=True,
-    #     with_stack=True,
-    #     use_cuda=True,
-    # )
-    # profiler.start() # 병목 조사 시작
 
     progress_bar = tqdm(range(0,num_epochs), ncols=1200)
     for epoch in progress_bar:
@@ -109,7 +100,6 @@ def train(args, data, models, optimizer, lr_scheduler):
                 # optimizer update - amp사용
                 scaler.step(optimizer) # amp사용
                 scaler.update() # amp사용
-
                 torch.cuda.empty_cache() # gpu 메모리 cache삭제
                 gc.collect() # # gpu 메모리 안 쓰는거 삭제
 
@@ -146,9 +136,6 @@ def train(args, data, models, optimizer, lr_scheduler):
                 progress_bar.set_postfix(**logs) # cli에 시각화
                 wandb.log(logs) # wandb에 시각화
 
-                # 병목 log
-                # profiler.step()
-    # profiler.stop() # 병목 조사 끝
     return diffusion_prior
 
 # def evaluate(args, data, models, saved_model_name):

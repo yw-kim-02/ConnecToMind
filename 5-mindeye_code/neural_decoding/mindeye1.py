@@ -239,7 +239,7 @@ class BrainDiffusionPrior(DiffusionPrior):
         return loss, pred # train 할 때 보통 loss와 prediction 같이 반환
 
     @torch.no_grad()
-    def p_sample_loop_ddpm(self, shape, text_cond, cond_scale = 1., generator=None):
+    def p_sample_loop(self, shape, text_cond, cond_scale = 1., generator=None):
         batch, device = shape[0], self.device
         x_start = None 
 
@@ -625,7 +625,7 @@ class BrainDiffusionPriorOld(DiffusionPrior):
         return pred, x_start
 
     @torch.no_grad()
-    def p_sample_loop_ddpm(self, shape, text_cond, cond_scale = 1., generator=None):
+    def p_sample_loop(self, shape, text_cond, cond_scale = 1., generator=None):
         batch, device = shape[0], self.device
 
         if generator is None:
@@ -845,7 +845,7 @@ def get_model_highlevel(args):
     for name, module in vd_pipe.image_unet.named_modules(): # class vd_pipe.image_unet를 찍은 object들 
         if isinstance(module, DualTransformer2DModel): # object들 중 DualTransformer2DModel 이름 추출
             module.mix_ratio = 0.0 # versatile에서 image condition만 사용
-            # text 안 주더라도 무조건 줘야함
+            # text contex를 사용하지 않더라도 shape는 맞춰야 함
             for i, type in enumerate(("text", "image")):
                 if type == "text":
                     module.condition_lengths[i] = 77

@@ -31,7 +31,7 @@ def parse_args():
         "--seed",type=int,default=42,
     )
     parser.add_argument(
-        "--batch_size", type=int, default=24,
+        "--batch_size", type=int, default=20,
         help="Batch size can be increased by 10x if only training v2c and not diffusion prior",
     )
     parser.add_argument(
@@ -106,7 +106,7 @@ def parse_args():
     ###### trainer ######
     parser.add_argument(
         "--mixup_pct",type=float,default=0.33,
-        help="BiMixCo에서 SoftCLIP로 넘어가는 ephoch",
+        help="BiMixCo에서 SoftCLIP로 넘어가는 epoch",
     )
     parser.add_argument(
         "--prior_loss_coefficient",type=float,default=0.3,
