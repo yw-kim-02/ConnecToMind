@@ -266,10 +266,10 @@ def reconstruction(
         best_img = brain_recons[range(inference_batch_size), best_picks]
 
 
-    return fig,          # 전체 subplot figure
+    return (fig,          # 전체 subplot figure
             brain_recons, # 모든 복원 결과 tensor ex) shape [b, recons_per_sample, 3, height, width]
             best_picks,   # best reconstruction 인덱스 ex) [0번 batch의 가장 좋은 index, 1번 batch의 가장 좋은 index, ...]
-            best_img     # best reconstruction 이미지 ex) [0번 batch의 가장 좋은 image, 1번 batch의 가장 좋은 image, ...]
+            best_img)    # best reconstruction 이미지 ex) [0번 batch의 가장 좋은 image, 1번 batch의 가장 좋은 image, ...]
 
 
 

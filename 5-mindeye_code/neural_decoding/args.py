@@ -42,6 +42,10 @@ def parse_args():
         "--is_shuffle",type=int,default=True,
         help="is shuffle",
     )
+    parser.add_argument(
+        "--num_epochs",type=int,default=1,
+        help="epoch 개수",
+    )
     ####################
 
     ###### mindeye1 ######
@@ -100,10 +104,6 @@ def parse_args():
         choices=['cycle','linear'],
     )
     parser.add_argument(
-        "--num_epochs",type=int,default=240,
-        help="epoch 개수",
-    )
-    parser.add_argument(
         "--num_devices",type=int,default=1,
         help="number of devices",
     )
@@ -130,7 +130,20 @@ def parse_args():
         "--model_name", type=str, default="mindeye1",
         help="모델 이름"
     )
+    parser.add_argument(
+        "--inference_batch_size",type=int,default=8,
+        help="versatile inference batch size",
+    )
+    parser.add_argument(
+        "--recons_per_sample", type=int, default=16,
+        help= "한 frmi로 몇 개 sampling할 지"
+    )
+    parser.add_argument(
+        "--num_inference_steps", type=int, default=20,
+        help= "versatile inference step"
+    )
     ####################
+
 
     
     parser.add_argument(
@@ -167,18 +180,7 @@ def parse_args():
 
     
     
-    parser.add_argument(
-        "--inference_batch_size",type=int,default=8,
-        help="versatile inference batch size",
-    )
-    parser.add_argument(
-        "--recons_per_sample", type=int, default=16,
-        help= "한 frmi로 몇 개 sampling할 지"
-    )
-    parser.add_argument(
-        "--num_inference_steps", type=int, default=20,
-        help= "versatile inference step"
-    )
+
 
     
     

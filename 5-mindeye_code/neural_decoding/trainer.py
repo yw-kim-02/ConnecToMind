@@ -196,7 +196,7 @@ def evaluate(args, data, models, model_path, metrics):
             _, _, _, best_img = reconstruction(
                 brain_clip_embeddings, image,
                 clip_extractor, unet, vae, noise_scheduler,
-                seed
+                seed,
                 num_inference_steps,
                 recons_per_sample, # mindeye에서는 16개
                 inference_batch_size=fmri_vol.shape[0], # batch 중에서 몇 개만 저장할지 -> inference batch와 같이 줄 것
