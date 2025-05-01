@@ -35,16 +35,24 @@ def parse_args():
         help="Batch size can be increased by 10x if only training v2c and not diffusion prior",
     )
     parser.add_argument(
-        "--num_workers", type=str, default=8,
+        "--num_workers", type=int, default=20, choices=[4,8,12,16,20],
         help="multi-processing in dataloader",
     )
     parser.add_argument(
-        "--is_shuffle",type=int,default=True,
+        "--num_epochs",type=int,default=3, choices=[3,240],
+        help="epoch 개수",
+    )
+    parser.add_argument(
+        "--is_shuffle",type=argparse.BooleanOptionalAction,default=True,
         help="is shuffle",
     )
     parser.add_argument(
-        "--num_epochs",type=int,default=1,
-        help="epoch 개수",
+        "--world_size",type=int,default=1,
+        help="is shuffle",
+    )
+    parser.add_argument(
+        "--rank",type=int,default=0,
+        help="is shuffle",
     )
     ####################
 
@@ -85,8 +93,6 @@ def parse_args():
         "--vd_cache_dir", type=str, default='/nas/research/03-Neural_decoding/5-mindeye_code/pretrained_cache',
         help="Where is cached Versatile Diffusion model; if not cached will download to this path",
     )
-
-    
     ####################
 
     ###### optimizer ######
@@ -102,10 +108,6 @@ def parse_args():
     parser.add_argument(
         "--scheduler_type",type=str,default='cycle',
         choices=['cycle','linear'],
-    )
-    parser.add_argument(
-        "--num_devices",type=int,default=1,
-        help="number of devices",
     )
     ####################
 

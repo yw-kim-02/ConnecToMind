@@ -1,0 +1,175 @@
+import os
+import gc
+
+import torch
+import torch.multiprocessing as mp
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+import wandb
+
+from args import parse_args
+from data import get_dataloader, sub1_train_dataset
+from mindeye1 import get_model_highlevel
+from optimizers import get_optimizer
+from schedulers import get_scheduler
+from metrics import get_metric
+from trainer import train, evaluate
+from utils import get_unique_path
+
+# def main():
+#     # parse_args 정의
+#     args = parse_args()
+
+#     #### train ####
+#     # data loader
+#     train_data = get_dataloader(args)
+
+#     # model 정의
+#     models = get_model_highlevel(args) 
+#     model_bundle = {
+#         "clip": models["clip"].to(args.device),
+#         "diffusion_prior": models["diffusion_prior"].to(args.device),
+#     }
+
+#     # optimizer 정의
+#     optimizer = get_optimizer(args, model_bundle["diffusion_prior"])
+
+#     # scheduler 정의(train만 함)
+#     train_dataset = sub1_train_dataset(args)
+#     num_train = len(train_dataset) 
+#     lr_scheduler = get_scheduler(args, optimizer, num_train)
+
+#     # wandb 적용
+#     wandb.login() # login
+#     wandb.init(project="neural_decoding", name=f"run-{wandb.util.generate_id()}") # init
+#     wandb.config = vars(args) # aparse_args()의 내용 그대로 config로 주기
+
+#     # train 시작
+#     output_model = train(args, train_data, model_bundle, optimizer, lr_scheduler)
+
+#     # model 저장
+#     output_path = os.path.join(args.root_dir, args.code_dir, args.output_dir, args.model_name)
+#     output_path = get_unique_path(output_path)
+#     os.makedirs(os.path.dirname(output_path), exist_ok=True)  # 경로 없으면 생성
+#     torch.save(output_model.state_dict(), output_path)
+
+#     # gpu에서 train 비우기
+#     del train_data, train_dataset, optimizer, lr_scheduler, output_model, model_bundle
+#     gc.collect()
+#     torch.cuda.empty_cache()
+
+#     #### evalutate ####
+#     setattr(args, 'mode', 'test')
+#     test_data = get_dataloader(args)
+
+#     model_bundle = {
+#         "clip": models["clip"].to(args.device),
+#         "diffusion_prior": models["diffusion_prior"].to(args.device),
+#         "vd_pipe": models["vd_pipe"].to(args.device), # inference에서만 사용
+#         "unet": models["unet"].to(args.device), # inference에서만 사용
+#         "vae": models["vae"].to(args.device), # inference에서만 사용
+#         "noise_scheduler": models["noise_scheduler"], # inference에서만 사용
+#     }
+
+#     metrics = get_metric(args)
+#     metric_bundle = {
+#         "pixcorr": metric_bundle["pixcorr"],
+#         "ssim": metric_bundle["ssim"],
+#         "clip": {
+#             "model": metric_bundle["clip"]["model"].to(args.device),
+#             "preprocess": metric_bundle["clip"]["preprocess"],
+#             "metric_fn": metric_bundle["clip"]["metric_fn"],
+#         },
+#         "alexnet2": {
+#             "model": metric_bundle["alexnet2"]["model"].to(args.device),
+#             "preprocess": metric_bundle["alexnet2"]["preprocess"],
+#             "layer": metric_bundle["alexnet2"]["layer"],
+#             "metric_fn": metric_bundle["alexnet2"]["metric_fn"],
+#         },
+#         "alexnet5": {
+#             "model": metric_bundle["alexnet5"]["model"].to(args.device),
+#             "preprocess": metric_bundle["alexnet5"]["preprocess"],
+#             "layer": metric_bundle["alexnet5"]["layer"],
+#             "metric_fn": metric_bundle["alexnet5"]["metric_fn"],
+#         },
+#         "inception": {
+#             "model": metric_bundle["inception"]["model"].to(args.device),
+#             "preprocess": metric_bundle["inception"]["preprocess"],
+#             "metric_fn": metric_bundle["inception"]["metric_fn"],
+#         },
+#     }
+
+#     result_values = evaluate(args, test_data, model_bundle, output_path, metric_bundle)
+
+#     # metric 저장
+#     txt_path = os.path.join(args.root_dir, args.output_dir, "evaluation_results.txt")
+#     with open(txt_path, "w") as f:
+#         for name, score in result_values.items():
+#             f.write(f"{name}: {score:.4f}\n")
+
+def main():
+    args = parse_args()
+    world_size = torch.cuda.device_count()
+    mp.spawn(train_evatluate_ddp, args=(world_size, args), nprocs=world_size, join=True)
+
+def train_evatluate_ddp(rank, world_size, args):
+    # multi-gpu 연결
+    setup(rank, world_size)
+
+    # 현재 프로세스가 사용할 GPU 설정
+    torch.cuda.set_device(rank)
+    args.device = torch.device(f"cuda:{rank}")
+
+    #### train ####
+    # data loader(분산 데이터로더) 
+    setattr(args, 'world_size', rank)
+    setattr(args, 'world_size', world_size)
+    train_data = get_dataloader(args)
+
+    # model 정의(DDP wrapping)
+    models = get_model_highlevel(args)
+    model_bundle = {
+        "clip": models["clip"].to(args.device),
+        "diffusion_prior": models["diffusion_prior"].to(args.device), # ddp model은 .module로 감싸기 때문에 .net, .voxel2clip를 바로 쓰면 오류나기 때문
+        "diffusion_prior_ddp": DDP(models["diffusion_prior"].to(args.device), device_ids=[rank]), # 학습할 때만 사용 
+    }
+
+    # optimizer 정의
+    optimizer = get_optimizer(args, model_bundle["diffusion_prior"])
+
+    # scheduler 정의
+    train_dataset = sub1_train_dataset(args)
+    num_train = len(train_dataset)
+    lr_scheduler = get_scheduler(args, optimizer, world_size, num_train)
+
+    # wandb적용(rank 0에서만 초기화)
+    if rank == 0:
+        wandb.login()
+        wandb.init(project="neural_decoding", name=f"run-{wandb.util.generate_id()}") # init
+        wandb.config = vars(args) # aparse_args()의 내용 그대로 config로 주기
+
+    # train 시작
+    trained_model = train(args, train_data, model_bundle, optimizer, lr_scheduler)
+
+    # model 저장(rank 0에서만 저장)
+    if rank == 0:
+        output_path = os.path.join(args.root_dir, args.code_dir, args.output_dir, args.model_name)
+        output_path = get_unique_path(output_path)
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        torch.save(trained_model.module.state_dict(), output_path)  # DDP이므로 .module 사용
+
+    # process 그룹을 깨끗이 해제
+    cleanup()
+
+
+
+def setup(rank, world_size):
+    os.environ['MASTER_ADDR'] = 'localhost'
+    os.environ['MASTER_PORT'] = '12355' # 아무 port 넣음
+    dist.init_process_group("nccl", rank=rank, world_size=world_size)
+
+def cleanup():
+    dist.destroy_process_group()
+
+if __name__ == "__main__":
+    main()

@@ -8,6 +8,7 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.data import ConcatDataset
 from torch import nn
+from torch.utils.data.distributed import DistributedSampler
 import torch.nn.functional as F
 from torchvision import transforms
 
@@ -199,7 +200,8 @@ def get_dataloader(args):
     
     if args.mode == 'train':
         train_dataset = sub1_train_dataset(args)
-        train_loader = DataLoader(train_dataset, batch_size=args.batch_size, num_workers=args.num_workers, pin_memory=True, shuffle=args.is_shuffle)
+        sampler = DistributedSampler(train_dataset, num_replicas=args.world_size, rank=args.rank, shuffle=True) # ddp를 위한 분산 데이터
+        train_loader = DataLoader(train_dataset, batch_size=args.batch_size, num_workers=args.num_workers, pin_memory=True, sampler=sampler)
         return train_loader
     
     if args.mode == 'test':

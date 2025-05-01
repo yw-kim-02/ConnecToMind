@@ -10,6 +10,7 @@ torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 import torch.nn as nn
 from torch.cuda.amp import autocast, GradScaler
+from torch.utils.data.distributed import DistributedSampler
 from torch.profiler import profile, record_function, ProfilerActivity
 
 from utils import img_augment, mixup, mixco_nce_loss, cosine_anneal, soft_clip_loss, topk, batchwise_cosine_similarity, get_unique_path, reconstruction
@@ -26,15 +27,18 @@ def train(args, data, models, optimizer, lr_scheduler):
     
     # model 정의
     clip_extractor = models["clip"]
-    diffusion_prior = models["diffusion_prior"]
+    diffusion_prior = models["diffusion_prior_ddp"]
     optimizer = optimizer
     lr_scheduler = lr_scheduler
 
     # log list
     losses, lrs = [], []
 
-    progress_bar = tqdm(range(0,num_epochs), ncols=1200)
+    progress_bar = tqdm(range(0, num_epochs), ncols=1200) if args.rank == 0 else range(0, num_epochs) # 0번 GPU만 tqdm적용
     for epoch in progress_bar:
+        # epoch 바뀔때 마다 gpu에 들어가는 data shuffle 
+        if isinstance(data.sampler, DistributedSampler): # data.sampler가 DistributedSampler의 method인지 확인
+            data.sampler.set_epoch(epoch) 
         
         diffusion_prior.train()
 
