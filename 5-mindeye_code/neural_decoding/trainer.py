@@ -12,7 +12,7 @@ import torch.nn as nn
 from torch.cuda.amp import autocast, GradScaler
 from torch.profiler import profile, record_function, ProfilerActivity
 
-from utils import img_augment, mixup, mixco_nce_loss, cosine_anneal, soft_clip_loss, topk, batchwise_cosine_similarity, get_unique_path
+from utils import img_augment, mixup, mixco_nce_loss, cosine_anneal, soft_clip_loss, topk, batchwise_cosine_similarity, get_unique_path, reconstruction
 
 def train(args, data, models, optimizer, lr_scheduler):
 
@@ -61,17 +61,16 @@ def train(args, data, models, optimizer, lr_scheduler):
                 fmri_vol, perm, betas, select = mixup(fmri_vol)
             
             with autocast():
+                #### forward 계산 + loss 계산 ####
                 # target 정의
                 clip_target = clip_extractor.embed_image(image).float()
-                # prediction 정의
+                # forward(MLP backbone) -> prior에 들어갈 embedding생성
                 clip_voxels, clip_voxels_proj = diffusion_prior.voxel2clip(fmri_vol)
                 clip_voxels = clip_voxels.view(len(fmri_vol),-1,clip_size) # [B, (257 * 768)] -> [B, 257, 768]
 
-                #### forward 계산 + loss 계산 ####
-                # forward(MLP backbone + Diffusion prior) -> prior loss
+                # forward(Diffusion prior) -> prior loss
                 prior_loss, clip_voxels_prediction = diffusion_prior(text_embed=clip_voxels, image_embed=clip_target) # text(prediction) = fMRI, image(label) = image
                 clip_voxels_prediction = clip_voxels_prediction / diffusion_prior.image_embed_scale # scale한 것을 원상태로 대돌려 놓음
-                
                 # forward(MLP projector) -> contrstive loss(mixco_nce_loss + soft_clip_loss)
                 clip_voxels_norm = nn.functional.normalize(clip_voxels_proj.flatten(1), dim=-1) # cosine simility를 위해 미리 nomalization
                 clip_target_norm = nn.functional.normalize(clip_target.flatten(1), dim=-1) # cosine simility를 위해 미리 nomalization
@@ -138,57 +137,118 @@ def train(args, data, models, optimizer, lr_scheduler):
 
     return diffusion_prior
 
-# def evaluate(args, data, models, saved_model_name):
+def evaluate(args, data, models, model_path, metrics):
 
-#     device = args.device
-#     num_epochs = args.num_epochs
-#     clip_size = args.clip_size
+    device = args.device
+    num_epochs = args.num_epochs
+    seed = args.seed
+    clip_size = args.clip_size
+    timesteps_prior = args.timesteps_prior
+    recons_per_sample = args.recons_per_sample
+    num_inference_steps = args.num_inference_steps
 
-#     scaler = GradScaler() # autocast scaler 인스턴스 생성
+    scaler = GradScaler() # autocast scaler 인스턴스 생성
     
-#     # model 정의 + train된 파라미터 불러오기
-#     clip_extractor = models["clip"]
+    # model 정의 + train된 파라미터 불러오기
+    clip_extractor = models["clip"]
 
-#     model_path = os.path.join(args.root_dir, args.output_dir, saved_model_name)
-#     state_dict = torch.load(model_path, map_location=args.device) # 파라미터 불러오기
-#     diffusion_prior = models["diffusion_prior"].load_state_dict(state_dict)
+    state_dict = torch.load(model_path, map_location=args.device) # 파라미터 불러오기
+    diffusion_prior = models["diffusion_prior"].load_state_dict(state_dict)
     
-#     vd_pipe = models["vd_pipe"]
-#     unet = models["unet"]
-#     vae = models["vae"]
-#     noise_scheduler = models["noise_scheduler"]
+    vd_pipe = models["vd_pipe"]
+    unet = models["unet"]
+    vae = models["vae"]
+    noise_scheduler = models["noise_scheduler"]
 
-#     # log list
-#     losses, lrs = [], []
+    # metric 
+    all_recons = []
+    all_image = []
 
-#     # log list
-#     losses, lrs = [], []
+    diffusion_prior.eval()
+    progress_bar = ttqdm(enumerate(data), total=len(data), ncols=120)
+    for index, (fmri_vol, image) in enumerate(data): # enumerate: index와 값을 같이 반환
+        with torch.no_grad():
+            #### forward inference ####
+            # noise 난수 고정
+            generator = torch.Generator(device=device)
+            generator.manual_seed(seed)
 
-#     # 병목 추적
-#     profiler = torch.profiler.profile(
-#         schedule=torch.profiler.schedule(wait=1, warmup=1, active=3, repeat=1),
-#         on_trace_ready=torch.profiler.tensorboard_trace_handler("./logdir"),
-#         record_shapes=True,
-#         profile_memory=True,
-#         with_stack=True,
-#         use_cuda=True,
-#     )
-#     profiler.start() # 병목 조사 시작
+            # data gpu 올리기
+            fmri_vol = fmri_vol.to(device)   # fMRI -> GPU
+            image = image.to(device)         # Image -> GPU
 
-#     progress_bar = tqdm(range(0,num_epochs), ncols=1200)
-#     for epoch in progress_bar:
-#         diffusion_prior.eval()
+            # target 정의
+            clip_target = clip_extractor.embed_image(image).float()
 
-#         for index, (fmri_vol, image) in enumerate(data): # enumerate: index와 값을 같이 반환
-#             with torch.no_grad():
-#                 # data gpu 올리기
-#                 fmri_vol = fmri_vol.to(device)   # fMRI -> GPU
-#                 image = image.to(device)         # Image -> GPU
+            # forward(MLP backbone) 
+            clip_voxels, clip_voxels_proj = diffusion_prior.voxel2clip(fmri_vol)
+            clip_voxels = clip_voxels.view(len(fmri_vol),-1,clip_size) # [B, (257 * 768)] -> [B, 257, 768]
+            proj_embeddings = proj_embeddings.cpu() # pick 할 때만 사용되어서 cpu로 내림
 
-#                 # target 정의
-#                 clip_target = clip_extractor.embed_image(image).float()
-#                 # prediction 정의
-#                 clip_voxels, clip_voxels_proj = diffusion_prior.voxel2clip(fmri_vol)
-#                 clip_voxels = clip_voxels.view(len(fmri_vol),-1,clip_size) # [B, (257 * 768)] -> [B, 257, 768]
+            # forward(diffusion prior) 
+            clip_voxels = clip_voxels.repeat_interleave(recons_per_sample, dim=0) # [B×(recons_per_sample), 257, 768] -> ex) 1번,1번,1번,2번,2번,2번,...
+            # diffusion prior 결과
+            brain_clip_embeddings = diffusion_prior.p_sample_loop(clip_voxels.shape, 
+                                    text_cond = dict(text_embed = clip_voxels), 
+                                    cond_scale = 1., timesteps = timesteps_prior, generator=generator) 
 
-                
+            # forward(versatile diffusion) 
+            _, _, _, best_img = reconstruction(
+                brain_clip_embeddings, image,
+                clip_extractor, unet, vae, noise_scheduler,
+                seed
+                num_inference_steps,
+                recons_per_sample, # mindeye에서는 16개
+                inference_batch_size=fmri_vol.shape[0], # batch 중에서 몇 개만 저장할지 -> inference batch와 같이 줄 것
+                img_lowlevel = None,
+                guidance_scale = 7.5,
+                img2img_strength = .85,
+                plotting=True,
+            )
+
+            # metric을 위해 저장
+            all_recons.append(best_img)       # 이미 CPU 상태
+            all_gts.append(image.cpu())        # GPU에서 내려야 함 (image는 아직 GPU)
+
+    all_recons = torch.cat(all_recons, dim=0)  # [N, 3, H, W]
+    all_gts = torch.cat(all_gts, dim=0)
+
+    #### Metric 계산 ####
+    results = {}
+
+    # PixCorr / SSIM
+    results["PixCorr"] = metrics["pixcorr"](all_recons, all_gts)
+    results["SSIM"] = metrics["ssim"](all_recons, all_gts)
+
+    # CLIP / AlexNet / Inception 
+    results["CLIP"] = metrics["clip"]["metric_fn"](
+        all_recons, all_gts,
+        metrics["clip"]["model"],
+        metrics["clip"]["preprocess"]
+    )
+
+    results["AlexNet_2"] = metrics["alexnet2"]["metric_fn"](
+        all_recons, all_gts,
+        metrics["alexnet2"]["model"],
+        metrics["alexnet2"]["preprocess"],
+        metrics["alexnet2"]["layer"]
+    )
+
+    results["AlexNet_5"] = metrics["alexnet5"]["metric_fn"](
+        all_recons, all_gts,
+        metrics["alexnet5"]["model"],
+        metrics["alexnet5"]["preprocess"],
+        metrics["alexnet5"]["layer"]
+    )
+
+    results["Inception"] = metrics["inception"]["metric_fn"](
+        all_recons, all_gts,
+        metrics["inception"]["model"],
+        metrics["inception"]["preprocess"]
+    )
+    
+    for name, score in results.items():
+        print(f"{name:12}: {score:.4f}")
+    wandb.log(results) # wandb에 시각화
+
+    return results

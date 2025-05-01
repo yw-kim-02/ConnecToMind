@@ -66,6 +66,10 @@ def parse_args():
         help='OpenAI clip variant',
     )
     parser.add_argument(
+        "--timesteps_prior",type=int,default=100,
+        help="prior inference timeestep개수",
+    )
+    parser.add_argument(
         "--norm_embs",action=argparse.BooleanOptionalAction,default=True,
         help="embedding 사용 유무",
     )
@@ -77,6 +81,8 @@ def parse_args():
         "--vd_cache_dir", type=str, default='/nas/research/03-Neural_decoding/5-mindeye_code/pretrained_cache',
         help="Where is cached Versatile Diffusion model; if not cached will download to this path",
     )
+
+    
     ####################
 
     ###### optimizer ######
@@ -160,15 +166,21 @@ def parse_args():
     )
 
     
+    
     parser.add_argument(
-        "--n_samples_save",type=int,default=0,choices=[0,1],
-        help="Number of reconstructions for monitoring progress, 0 will speed up training",
+        "--inference_batch_size",type=int,default=8,
+        help="versatile inference batch size",
     )
-
+    parser.add_argument(
+        "--recons_per_sample", type=int, default=16,
+        help= "한 frmi로 몇 개 sampling할 지"
+    )
     parser.add_argument(
         "--num_inference_steps", type=int, default=20,
         help= "versatile inference step"
     )
+
+    
     
 
     # Jupyter 환경에서는 빈 리스트를 전달해야 실행이 됨

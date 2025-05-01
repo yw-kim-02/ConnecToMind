@@ -107,7 +107,7 @@ class Clipper(torch.nn.Module):
                 clip_emb = nn.functional.normalize(clip_emb, dim=-1)
     
         return clip_emb
-    
+
     def _versatile_normalize_embeddings(self, encoder_output):
         '''
         embeds(hidden_state 있을 때): image embedding normalization - shape: [batch, 257, 768]

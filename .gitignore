@@ -7,3 +7,5 @@ __pycache__/
 wandb/
 pretrained_cache/
 logdir/
+
+work/
