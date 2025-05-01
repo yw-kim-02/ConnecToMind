@@ -9,3 +9,5 @@ pretrained_cache/
 logdir/
 
 work/
+
+*.log
