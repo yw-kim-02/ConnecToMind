@@ -35,7 +35,7 @@ def parse_args():
         help="Batch size can be increased by 10x if only training v2c and not diffusion prior",
     )
     parser.add_argument(
-        "--num_workers", type=int, default=20, choices=[4,8,12,16,20],
+        "--num_workers", type=int, default=10, choices=[4,8,12,16,20],
         help="multi-processing in dataloader",
     )
     parser.add_argument(

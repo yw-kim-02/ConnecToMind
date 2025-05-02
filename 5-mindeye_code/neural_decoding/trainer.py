@@ -69,12 +69,12 @@ def train(args, data, models, optimizer, lr_scheduler):
                 # target 정의
                 clip_target = clip_extractor.embed_image(image).float()
                 # forward(MLP backbone) -> prior에 들어갈 embedding생성
-                clip_voxels, clip_voxels_proj = diffusion_prior.voxel2clip(fmri_vol)
+                clip_voxels, clip_voxels_proj = diffusion_prior.module.voxel2clip(fmri_vol)
                 clip_voxels = clip_voxels.view(len(fmri_vol),-1,clip_size) # [B, (257 * 768)] -> [B, 257, 768]
 
                 # forward(Diffusion prior) -> prior loss
                 prior_loss, clip_voxels_prediction = diffusion_prior(text_embed=clip_voxels, image_embed=clip_target) # text(prediction) = fMRI, image(label) = image
-                clip_voxels_prediction = clip_voxels_prediction / diffusion_prior.image_embed_scale # scale한 것을 원상태로 대돌려 놓음
+                clip_voxels_prediction = clip_voxels_prediction / diffusion_prior.module.image_embed_scale # scale한 것을 원상태로 대돌려 놓음
                 # forward(MLP projector) -> contrstive loss(mixco_nce_loss + soft_clip_loss)
                 clip_voxels_norm = nn.functional.normalize(clip_voxels_proj.flatten(1), dim=-1) # cosine simility를 위해 미리 nomalization
                 clip_target_norm = nn.functional.normalize(clip_target.flatten(1), dim=-1) # cosine simility를 위해 미리 nomalization
@@ -136,15 +136,15 @@ def train(args, data, models, optimizer, lr_scheduler):
                     "train/fwd_pct_correct_mean": fwd_percent_correct / len(losses),
                     "train/bwd_pct_correct_mean": bwd_percent_correct / len(losses),
                 }
-                progress_bar.set_postfix(**logs) # cli에 시각화
-                wandb.log(logs) # wandb에 시각화
+                if args.rank == 0:
+                    progress_bar.set_postfix(**logs) # cli에 시각화
+                    wandb.log(logs) # wandb에 시각화
 
     return diffusion_prior
 
 def evaluate(args, data, models, model_path, metrics):
 
     device = args.device
-    num_epochs = args.num_epochs
     seed = args.seed
     clip_size = args.clip_size
     timesteps_prior = args.timesteps_prior
@@ -169,8 +169,8 @@ def evaluate(args, data, models, model_path, metrics):
     all_image = []
 
     diffusion_prior.eval()
-    progress_bar = ttqdm(enumerate(data), total=len(data), ncols=120)
-    for index, (fmri_vol, image) in enumerate(data): # enumerate: index와 값을 같이 반환
+    progress_bar = tqdm(enumerate(data), total=len(data), ncols=120)
+    for index, (fmri_vol, image) in progress_bar: # enumerate: index와 값을 같이 반환
         with torch.no_grad():
             #### forward inference ####
             # noise 난수 고정
@@ -185,14 +185,14 @@ def evaluate(args, data, models, model_path, metrics):
             clip_target = clip_extractor.embed_image(image).float()
 
             # forward(MLP backbone) 
-            clip_voxels, clip_voxels_proj = diffusion_prior.voxel2clip(fmri_vol)
+            clip_voxels, clip_voxels_proj = diffusion_prior.module.voxel2clip(fmri_vol)
             clip_voxels = clip_voxels.view(len(fmri_vol),-1,clip_size) # [B, (257 * 768)] -> [B, 257, 768]
-            proj_embeddings = proj_embeddings.cpu() # pick 할 때만 사용되어서 cpu로 내림
+            proj_embeddings = clip_voxels_proj.cpu() # pick 할 때만 사용되어서 cpu로 내림
 
             # forward(diffusion prior) 
             clip_voxels = clip_voxels.repeat_interleave(recons_per_sample, dim=0) # [B×(recons_per_sample), 257, 768] -> ex) 1번,1번,1번,2번,2번,2번,...
             # diffusion prior 결과
-            brain_clip_embeddings = diffusion_prior.p_sample_loop(clip_voxels.shape, 
+            brain_clip_embeddings = diffusion_prior.module.p_sample_loop(clip_voxels.shape, 
                                     text_cond = dict(text_embed = clip_voxels), 
                                     cond_scale = 1., timesteps = timesteps_prior, generator=generator) 
 

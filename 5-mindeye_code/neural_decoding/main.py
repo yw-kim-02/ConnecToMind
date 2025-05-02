@@ -109,31 +109,34 @@ from utils import get_unique_path
 
 def main():
     args = parse_args()
-    world_size = torch.cuda.device_count()
-    mp.spawn(train_evatluate_ddp, args=(world_size, args), nprocs=world_size, join=True)
+
+    rank = int(os.environ["RANK"]) # 환경변수에서 받아옴
+    world_size = int(os.environ["WORLD_SIZE"]) # 환경변수에서 받아옴
+    train_evatluate_ddp(rank, world_size, args)
 
 def train_evatluate_ddp(rank, world_size, args):
     # multi-gpu 연결
     setup(rank, world_size)
-
+ 
     # 현재 프로세스가 사용할 GPU 설정
     torch.cuda.set_device(rank)
     args.device = torch.device(f"cuda:{rank}")
-
+    
     #### train ####
     # data loader(분산 데이터로더) 
-    setattr(args, 'world_size', rank)
+    setattr(args, 'rank', rank)
     setattr(args, 'world_size', world_size)
     train_data = get_dataloader(args)
-
+    
     # model 정의(DDP wrapping)
     models = get_model_highlevel(args)
+    prior_model = models["diffusion_prior"].to(args.device) # gpu memory에 1개만 올리기 위해 변수 지정 -> 아래 딕셔너리에서는 주소기반  이기 때문에 2개 안올라감 
     model_bundle = {
         "clip": models["clip"].to(args.device),
-        "diffusion_prior": models["diffusion_prior"].to(args.device), # ddp model은 .module로 감싸기 때문에 .net, .voxel2clip를 바로 쓰면 오류나기 때문
-        "diffusion_prior_ddp": DDP(models["diffusion_prior"].to(args.device), device_ids=[rank]), # 학습할 때만 사용 
+        "diffusion_prior": prior_model, # multi-gpu로 나누지 않을 때 사용 ex) optimizer는 일반 모델이 필요
+        "diffusion_prior_ddp": DDP(prior_model, device_ids=[rank]), # multi-gpu로 나눠질 때만 사용
     }
-
+   
     # optimizer 정의
     optimizer = get_optimizer(args, model_bundle["diffusion_prior"])
 
@@ -161,11 +164,7 @@ def train_evatluate_ddp(rank, world_size, args):
     # process 그룹을 깨끗이 해제
     cleanup()
 
-
-
 def setup(rank, world_size):
-    os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '12355' # 아무 port 넣음
     dist.init_process_group("nccl", rank=rank, world_size=world_size)
 
 def cleanup():
