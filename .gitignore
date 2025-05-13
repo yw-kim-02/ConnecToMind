@@ -11,3 +11,5 @@ logdir/
 work/
 
 *.log
+
+output/

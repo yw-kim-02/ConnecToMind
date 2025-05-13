@@ -1,7 +1,11 @@
 import random
 import os
 import numpy as np
+import matplotlib.pyplot as plt
 import torch
+from torchvision import transforms
+import wandb
+import gc
 
 # image augmentation
 import kornia
@@ -119,21 +123,80 @@ def get_unique_path(base_path):
         i += 1
     return f"{base}_{i}{ext}"
 
+# 학습할때 nan체크 + 넘김
+def check_nan_and_log(global_step, fmri_vol=None, clip_voxels=None, loss=None, wandb=None):
+    nan_flag = False
+
+    if fmri_vol is not None and torch.isnan(fmri_vol).any():
+        print(f"[NaN] Detected in `fmri_vol` at step {global_step}")
+        if wandb: wandb.log({"debug/nan_fmri_vol": global_step})
+        nan_flag = True
+
+    if clip_voxels is not None and torch.isnan(clip_voxels).any():
+        print(f"[NaN] Detected in `clip_voxels` at step {global_step}")
+        if wandb: wandb.log({"debug/nan_clip_voxels": global_step})
+        nan_flag = True
+
+    if loss is not None and torch.isnan(loss):
+        print(f"[NaN] Detected in `loss` at step {global_step}")
+        if wandb: wandb.log({"debug/nan_loss": global_step})
+        nan_flag = True
+
+    if nan_flag:
+        print(f"[Warning] Skipping batch due to NaN at step {global_step}")
+
+    return nan_flag
+
+def log_gradient_norms(model, global_step=None, verbose=True):
+    """
+    모델의 각 파라미터 gradient의 L2 norm을 출력하고 전체 norm을 반환합니다.
+    
+    Args:
+        model (torch.nn.Module): gradient를 확인할 모델 (예: diffusion_prior)
+        global_step (int, optional): 현재 학습 step (출력용)
+        verbose (bool): True면 출력, False면 출력하지 않음
+
+    Returns:
+        total_grad_norm (float): 전체 gradient의 L2 norm
+    """
+    total_grad_norm = 0.0
+    for name, param in model.named_parameters():
+        if param.grad is None:
+            if verbose:
+                print(f"[!] {name} grad is None!")
+        elif torch.all(param.grad == 0):
+            if verbose:
+                print(f"[!] {name} grad is all zeros.")
+        else:
+            grad_norm = param.grad.data.norm(2).item()
+            if verbose:
+                print(f"[Grad] {name}: {grad_norm:.6f}")
+            total_grad_norm += grad_norm ** 2
+
+    total_grad_norm = total_grad_norm ** 0.5
+    if verbose:
+        step_msg = f" Step {global_step}" if global_step is not None else ""
+        print(f"[Total Grad Norm]{step_msg}: {total_grad_norm:.6f}")
+    return total_grad_norm
+
 # reconstruction
 @torch.no_grad()
 def reconstruction(
-    brain_clip_embeddings, image,
+    brain_clip_embeddings, proj_embeddings, image,
     clip_extractor, unet=None, vae=None, noise_scheduler=None,
     seed = 42,
+    device = "cuda",
     num_inference_steps = 50,
     recons_per_sample = 1, # mindeye에서는 16개
     inference_batch_size=1, # batch 중에서 몇 개만 저장할지 -> batch와 같이 줄 것
     img_lowlevel = None, # low level image
-    guidance_scale = 7.5,
+    guidance_scale = 3.5, # 기본 7.5
     img2img_strength = .85,
     plotting=True,
 ):
     #### setting ####
+    generator = torch.Generator(device=device)
+    generator.manual_seed(seed)
     if unet:
         # CFG 사용
         do_classifier_free_guidance = guidance_scale > 1.0 
@@ -142,6 +205,10 @@ def reconstruction(
         # 생성할 iamge resolution
         height = unet.config.sample_size * vae_scale_factor 
         width = unet.config.sample_size * vae_scale_factor
+
+    # brain_clip_embeddings [b, 257, 768] → [b*r, 257, 768]
+    brain_clip_embeddings = brain_clip_embeddings.repeat_interleave(recons_per_sample, dim=0)  # [b*r, 257, 768]
+    total_samples = inference_batch_size * recons_per_sample
 
     #### versatile diffusion ####
     # cls token norm을 사용하여 모든 patch normalization
@@ -157,10 +224,10 @@ def reconstruction(
         input_embedding = torch.cat([torch.zeros_like(input_embedding), input_embedding]).to(device).to(unet.dtype)
         prompt_embeds = torch.cat([torch.zeros_like(prompt_embeds), prompt_embeds]).to(device).to(unet.dtype) # [2 * b, 77, 768]
     
-    # dual_prompt_embeddings
-    input_embedding = torch.cat([prompt_embeds, input_embedding], dim=1) # [2 * b, 257+77, 768]
+    # dual_prompt_embeddings [2*b*r, 257+77, 768]
+    input_embedding = torch.cat([prompt_embeds, input_embedding], dim=1) 
     
-    # CFG로 인해 batch size가 2배 늘어난 것을 2배 나눠야 한다
+    # CFG로 인해 batch size가 2배 늘어난 것을 2배 나눠야 한다 - low level 있으면 사용
     shape = (inference_batch_size, unet.in_channels, height // vae_scale_factor, width // vae_scale_factor) # [b, 257+77, 768]
     
     # timesteps 정의
@@ -186,7 +253,7 @@ def reconstruction(
         latents = init_latents
     else: # pure noise에서 시작
         timesteps = noise_scheduler.timesteps
-        latents = torch.randn([recons_per_sample, 4, 64, 64], device=device,
+        latents = torch.randn([total_samples, 4, 64, 64], device=device,
                                 generator=generator, dtype=input_embedding.dtype)
         latents = latents * noise_scheduler.init_noise_sigma
 
@@ -206,14 +273,16 @@ def reconstruction(
 
         # compute denoise(x_t) -> x_t-1
         latents = noise_scheduler.step(noise_pred, t, latents).prev_sample
-    # vae decoder를 통해 image로 변환
+    # vae decoder를 통해 image로 변환 # [b*r, 3, H, W]
     recons = decode_latents(latents,vae).detach().cpu()
-    brain_recons = recons.view(inference_batch_size, recons_per_sample, 3, height, width) # [b*(recons_per_sample), 3, height, width] -> [b, recons_per_sample, 3, height, width]
+
+    brain_recons = recons.view(inference_batch_size, recons_per_sample, 3, height, width) # [b, r, 3, height, width] -> [b, r, 3, height, width]
     print("brain_recons",brain_recons.shape)
+
         
     #### pick best reconstruction out of several ####
     best_picks = np.zeros(inference_batch_size).astype(np.int16)  # best reconstruction 인덱스를 담은 vector
-    v2c_reference_out = nn.functional.normalize(proj_embeddings.view(len(proj_embeddings), -1), dim=-1)  # [inference_batch_size, clip_dim]
+    v2c_reference_out = F.normalize(proj_embeddings.view(len(proj_embeddings), -1), dim=-1)  # [b, 768]
     for sample_idx in range(inference_batch_size):  # inference_batch_size
         sims = []
         reference = v2c_reference_out[sample_idx:sample_idx+1]  # [1, clip_dim]
@@ -221,7 +290,7 @@ def reconstruction(
         for recon_idx in range(recons_per_sample):
             currecon = brain_recons[sample_idx, recon_idx].unsqueeze(0).float()  # [1, 3, H, W]
             currecon = clip_extractor.embed_image(currecon).to(proj_embeddings.device).to(proj_embeddings.dtype)  # [1, clip_dim]
-            currecon = nn.functional.normalize(currecon.view(len(currecon), -1), dim=-1)  # normalize
+            currecon = F.normalize(currecon.view(len(currecon), -1), dim=-1)  # normalize
 
             cursim = batchwise_cosine_similarity(reference, currecon)  # (1, 1) similarity
             sims.append(cursim.item())  # scalar 값만 append
@@ -265,13 +334,55 @@ def reconstruction(
         fig = None
         best_img = brain_recons[range(inference_batch_size), best_picks]
 
-
+    # gpu memory관리
+    del latents, input_embedding, prompt_embeds, noise_pred, currecon
+    torch.cuda.empty_cache()
+    torch.cuda.ipc_collect()
+    gc.collect()
+    
     return (fig,          # 전체 subplot figure
             brain_recons, # 모든 복원 결과 tensor ex) shape [b, recons_per_sample, 3, height, width]
             best_picks,   # best reconstruction 인덱스 ex) [0번 batch의 가장 좋은 index, 1번 batch의 가장 좋은 index, ...]
             best_img)    # best reconstruction 이미지 ex) [0번 batch의 가장 좋은 image, 1번 batch의 가장 좋은 image, ...]
 
+def decode_latents(latents,vae):
+    latents = 1 / 0.18215 * latents
+    image = vae.decode(latents).sample
+    image = (image / 2 + 0.5).clamp(0, 1)
+    return image
 
+def torch_to_Image(x):
+    if x.ndim==4:
+        x=x[0]
+    return transforms.ToPILImage()(x)
+
+def plot_best_images(all_best_imgs, row_size=5, save_path=None):
+    """
+    all_best_imgs: list of [3, H, W] tensors (각 batch에서 나온 best image)
+    row_size: 한 줄에 그릴 이미지 수
+    save_path: 저장 경로 (None이면 저장하지 않고 그냥 보여줌)
+    """
+    n = len(all_best_imgs)
+    rows = (n + row_size - 1) // row_size
+    fig, axes = plt.subplots(rows, row_size, figsize=(5 * row_size, 5 * rows))
+
+    for idx, img in enumerate(all_best_imgs):
+        r, c = divmod(idx, row_size)
+        ax = axes[r][c] if rows > 1 else axes[c]
+        ax.imshow(torch_to_Image(img))
+        ax.set_title(f"Best {idx}")
+        ax.axis("off")
+
+    # 남은 subplot 비우기
+    for idx in range(n, rows * row_size):
+        r, c = divmod(idx, row_size)
+        ax = axes[r][c] if rows > 1 else axes[c]
+        ax.axis("off")
+
+    plt.tight_layout()
+    if save_path:
+        fig.savefig(save_path, bbox_inches="tight")
+    plt.show()
 
 # # reconstruction
 # @torch.no_grad()
@@ -389,7 +500,7 @@ def reconstruction(
         
 #     #### pick best reconstruction out of several ####
 #     best_picks = np.zeros(inference_batch_size).astype(np.int16)  # best reconstruction 인덱스를 담은 vector
-#     v2c_reference_out = nn.functional.normalize(proj_embeddings.view(len(proj_embeddings), -1), dim=-1)  # [inference_batch_size, clip_dim]
+#     v2c_reference_out = F.normalize(proj_embeddings.view(len(proj_embeddings), -1), dim=-1)  # [inference_batch_size, clip_dim]
 #     for sample_idx in range(inference_batch_size):  # inference_batch_size
 #         sims = []
 #         reference = v2c_reference_out[sample_idx:sample_idx+1]  # [1, clip_dim]
@@ -397,7 +508,7 @@ def reconstruction(
 #         for recon_idx in range(recons_per_sample):
 #             currecon = brain_recons[sample_idx, recon_idx].unsqueeze(0).float()  # [1, 3, H, W]
 #             currecon = clip_extractor.embed_image(currecon).to(proj_embeddings.device).to(proj_embeddings.dtype)  # [1, clip_dim]
-#             currecon = nn.functional.normalize(currecon.view(len(currecon), -1), dim=-1)  # normalize
+#             currecon = F.normalize(currecon.view(len(currecon), -1), dim=-1)  # normalize
 
 #             cursim = batchwise_cosine_similarity(reference, currecon)  # (1, 1) similarity
 #             sims.append(cursim.item())  # scalar 값만 append

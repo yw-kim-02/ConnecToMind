@@ -2,9 +2,10 @@ import torch
 import numpy as np
 from torchvision import transforms
 from skimage.color import rgb2gray
-from skimage.metrics import structural_similarity as ssim
+from skimage.metrics import structural_similarity 
 
 import clip
+from torchvision.transforms.functional import to_pil_image
 from torchvision.models import alexnet, inception_v3
 from torchvision.models.feature_extraction import create_feature_extractor
 from torchvision.models import AlexNet_Weights, Inception_V3_Weights
@@ -24,44 +25,63 @@ def ssim(recons, gts, resize=425):
     recon_gray = rgb2gray(preprocess(recons).permute(0,2,3,1).cpu())
     gts_gray = rgb2gray(preprocess(gts).permute(0,2,3,1).cpu())
     ssim_scores = [
-        ssim(r, g, channel_axis=-1, gaussian_weights=True, sigma=1.5, use_sample_covariance=False, data_range=1.0)
+        structural_similarity(r, g, multichannel=False, gaussian_weights=True, sigma=1.5, use_sample_covariance=False, data_range=1.0)
         for r, g in zip(recon_gray, gts_gray)
     ]
     return np.mean(ssim_scores)
 
 # Clip
-def clip_metric(recons, gts, clip_model, preprocess):
-    return two_way_identification(recons, gts, clip_model.encode_image, preprocess)
+def clip_metric(args, recons, gts, clip_model, preprocess):
+    return two_way_identification(args, recons, gts, clip_model.encode_image, preprocess)
 
 # AlexNet 2
-def alexnet_2(recons, gts, alex_model, preprocess, layer='features.4'):
-    return two_way_identification(recons, gts, alex_model, preprocess, layer)
+def alexnet_2(args, recons, gts, alex_model, preprocess, layer='features.4'):
+    return two_way_identification(args, recons, gts, alex_model, preprocess, layer)
 
 # AlexNet 5
-def alexnet_5(recons, gts, alex_model, preprocess, layer='features.11'):
-    return two_way_identification(recons, gts, alex_model, preprocess, layer)
+def alexnet_5(args, recons, gts, alex_model, preprocess, layer='features.11'):
+    return two_way_identification(args, recons, gts, alex_model, preprocess, layer)
 
 # Inception
-def inception(recons, gts, incep_model, preprocess):
-    return two_way_identification(recons, gts, incep_model, preprocess, 'avgpool')
+def inception(args, recons, gts, incep_model, preprocess):
+    return two_way_identification(args, recons, gts, incep_model, preprocess, 'avgpool')
 
 # 2-way Identification (used for CLIP, AlexNet, Inception)
 @torch.no_grad()
-def two_way_identification(recons, gts, model, preprocess, feature_layer=None):
-    pred_feats = model(torch.stack([preprocess(r) for r in recons]).to(recons.device))
-    gt_feats = model(torch.stack([preprocess(g) for g in gts]).to(gts.device))
+def two_way_identification(args, recons, gts, model, preprocess, feature_layer=None):
+    device = args.device
+
+    # (PIL or Tensor) + preprocess
+    recon_images = [process_image(r, preprocess) for r in recons]
+    gt_images    = [process_image(g, preprocess) for g in gts]
+
+    pred_feats = model(torch.stack(recon_images).to(device))
+    gt_feats = model(torch.stack(gt_images).to(device))
 
     if feature_layer:
-        pred_feats = pred_feats[feature_layer].flatten(1).cpu().numpy()
-        gt_feats = gt_feats[feature_layer].flatten(1).cpu().numpy()
+        pred_feats = pred_feats[feature_layer].flatten(1).detach().cpu().numpy()
+        gt_feats = gt_feats[feature_layer].flatten(1).detach().cpu().numpy()
     else:
-        pred_feats = pred_feats.float().flatten(1).cpu().numpy()
-        gt_feats = gt_feats.float().flatten(1).cpu().numpy()
+        pred_feats = pred_feats.float().flatten(1).detach().cpu().numpy()
+        gt_feats = gt_feats.float().flatten(1).detach().cpu().numpy()
 
     r = np.corrcoef(gt_feats, pred_feats)
     r = r[:len(gt_feats), len(gt_feats):]
     correct = (r < np.expand_dims(np.diag(r), axis=1)).sum(axis=1)
     return np.mean(correct) / (len(gt_feats) - 1)
+
+def process_image(tensor_img, preprocess):
+    """
+    PIL → preprocess → Tensor (for CLIP)
+    또는
+    PIL → ToTensor → preprocess (for AlexNet/Inception)
+    """
+    pil_img = to_pil_image(tensor_img.cpu())
+    try:
+        return preprocess(pil_img)
+    except Exception:
+        tensor_img = transforms.ToTensor()(pil_img)
+        return preprocess(tensor_img)
 
 def get_metric(args):
     device = args.device

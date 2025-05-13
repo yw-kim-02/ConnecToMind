@@ -30,12 +30,12 @@ class TrainDataset(Dataset): # ses단위로 실행
         df = pd.read_csv(self.tsv_path, sep='\t')
         self.valid_indices = df[df['train'] == train].index.tolist()
 
-        # sub마다 maskload(shape: (Z, Y, X))
-        sub = re.search(r"(sub-\d+)", self.fmri_path).group(1)
-        mask_file = os.path.join(self.mask_path, f"{sub}_nsdgeneral.nii.gz")
-        mask_data = nib.load(mask_file).get_fdata()
-        mask_bool = (mask_data == 1)  # mask에 해당하는 부분 true 
-        self.mask_tensor = torch.tensor(mask_bool).nonzero(as_tuple=True) # tensor로 변환 + 위치로 저장 -> 속도 빠름
+        # mask처리 - sub마다 maskload(shape: (Z, Y, X))
+        # sub = re.search(r"(sub-\d+)", self.fmri_path).group(1)
+        # mask_file = os.path.join(self.mask_path, f"{sub}_nsdgeneral.nii.gz")
+        # mask_data = nib.load(mask_file).get_fdata()
+        # mask_bool = (mask_data == 1)  # mask에 해당하는 부분 true 
+        # self.mask_tensor = torch.tensor(mask_bool).nonzero(as_tuple=True) # tensor로 변환 + 위치로 저장 -> 속도 빠름
 
     def __len__(self):
         return len(self.valid_indices)
@@ -44,11 +44,15 @@ class TrainDataset(Dataset): # ses단위로 실행
         actual_idx = self.valid_indices[idx]  # idx -> 기존 데이터에서의 진짜 인덱스
 
         # 해당 볼륨만 로드 (4D → 3D)
-        fmri = nib.load(self.fmri_path).dataobj
-        fmri_vol = torch.tensor(fmri[:, :, :, actual_idx]).float()
+        # fmri = nib.load(self.fmri_path).dataobj
+        # fmri_vol = torch.tensor(fmri[:, :, :, actual_idx]).float()
 
         # 마스크 적용: (Z, Y, X) → (N,)
-        fmri_vol = fmri_vol[self.mask_tensor]
+        # fmri_vol = fmri_vol[self.mask_tensor]
+
+        # npy 로딩
+        fmri_all = np.load(self.fmri_path, mmap_mode='r', allow_pickle=True)  # shape: (T, N_voxels)
+        fmri_vol = torch.tensor(fmri_all[actual_idx]).float()  # shape: (N_voxels,)
 
         # image column 한 행만 로딩
         row = pd.read_csv(self.tsv_path, sep='\t', skiprows=range(1, actual_idx + 1), nrows=1)
@@ -69,12 +73,12 @@ class TestDataset(Dataset): # sub단위로 실행
         self.mask_path = mask_path
         self.transform = transform # PIL.Image -> tensor
 
-        # sub마다 maskload(shape: (Z, Y, X))
-        sub = re.search(r"(sub-\d+)", self.fmri_info_list[0]['fmri_volumes'][0][0]).group(1)
-        mask_file = os.path.join(self.mask_path, f"{sub}_nsdgeneral.nii.gz")
-        mask_data = nib.load(mask_file).get_fdata()
-        mask_bool = (mask_data == 1)  # mask에 해당하는 부분 true 
-        self.mask_tensor = torch.tensor(mask_bool).nonzero(as_tuple=True) # tensor로 변환 + 위치로 저장 -> 속도 빠름
+        # mask처리 - sub마다 maskload(shape: (Z, Y, X))
+        # sub = re.search(r"(sub-\d+)", self.fmri_info_list[0]['fmri_volumes'][0][0]).group(1)
+        # mask_file = os.path.join(self.mask_path, f"{sub}_nsdgeneral.nii.gz")
+        # mask_data = nib.load(mask_file).get_fdata()
+        # mask_bool = (mask_data == 1)  # mask에 해당하는 부분 true 
+        # self.mask_tensor = torch.tensor(mask_bool).nonzero(as_tuple=True) # tensor로 변환 + 위치로 저장 -> 속도 빠름
 
         
     def __len__(self):
@@ -87,11 +91,16 @@ class TestDataset(Dataset): # sub단위로 실행
         
         fmri_vols = []
         for path, i in fmri_list:
-            data = nib.load(path).dataobj
-            fmri_vol = torch.tensor(data[:, :, :, i]).float()
-            # 마스크 적용: (Z, Y, X) → (N,)
-            fmri_vol = fmri_vol[self.mask_tensor]  
+            data = np.load(path, mmap_mode='r', allow_pickle=True)  # shape: (T, N_voxels)
+            fmri_vol = torch.tensor(data[i]).float()  # shape: (N_voxels,)
             fmri_vols.append(fmri_vol)
+
+
+            # data = nib.load(path).dataobj
+            # fmri_vol = torch.tensor(data[:, :, :, i]).float()
+            # # 마스크 적용: (Z, Y, X) → (N,)
+            # fmri_vol = fmri_vol[self.mask_tensor]  
+            # fmri_vols.append(fmri_vol)
 
         # idx당 하나의 volume 생성
         fmri_avg = torch.stack(fmri_vols).mean(0)  # mean(0): voxel-wise 평균 -> 결과 shape(X, Y, Z)
@@ -112,14 +121,16 @@ def sub1_train_dataset(args): # ses단위로 실행
     transform = transforms.ToTensor()
     
     # 세션 자동 추출
-    pattern = f"{root_dir}/{fmri_dir}/{fmri_detail_dir}/sub-01/ses-*/func/sub-01_ses-*_desc-betaroizscore.nii.gz"
+    # pattern = f"{root_dir}/{fmri_dir}/{fmri_detail_dir}/sub-01/ses-*/func/sub-01_ses-*_desc-betaroizscore.nii.gz"
+    pattern = f"{root_dir}/{fmri_dir}/{fmri_detail_dir}/sub-01/ses-*/func/sub-01_ses-*_desc-betaroizscore.npy"
     fmri_files = glob.glob(pattern)
     sessions = sorted([re.search(r'ses-(\d+)', f).group(1) for f in fmri_files]) # ex) 01,02 ... 추출
 
     train_datasets = []
 
     for ses in sessions:
-        fmri_path = f"{root_dir}/{fmri_dir}/{fmri_detail_dir}/sub-01/ses-{ses}/func/sub-01_ses-{ses}_desc-betaroizscore.nii.gz"
+        # fmri_path = f"{root_dir}/{fmri_dir}/{fmri_detail_dir}/sub-01/ses-{ses}/func/sub-01_ses-{ses}_desc-betaroizscore.nii.gz"
+        fmri_path = f"{root_dir}/{fmri_dir}/{fmri_detail_dir}/sub-01/ses-{ses}/func/sub-01_ses-{ses}_desc-betaroizscore.npy"
         tsv_path = f"{root_dir}/{fmri_dir}/{fmri_detail_dir}/sub-01/ses-{ses}/func/sub-01_ses-{ses}_task-image_events.tsv"
         image_path = f"{root_dir}/{image_dir}"
         mask_path = f"{root_dir}/{fmri_dir}/{fmri_detail_dir}/sub-01"
@@ -140,7 +151,8 @@ def sub1_test_dataset(args): # sub단위로 실행
     transform = transforms.ToTensor()
 
     # 모든 nii 경로 뽑음
-    pattern = f"{root_dir}/{fmri_dir}/{fmri_detail_dir}/sub-01/ses-*/func/sub-01_ses-*_desc-betaroizscore.nii.gz"
+    # pattern = f"{root_dir}/{fmri_dir}/{fmri_detail_dir}/sub-01/ses-*/func/sub-01_ses-*_desc-betaroizscore.nii.gz"
+    pattern = f"{root_dir}/{fmri_dir}/{fmri_detail_dir}/sub-01/ses-*/func/sub-01_ses-*_desc-betaroizscore.npy"
     fmri_files = sorted(glob.glob(pattern))
 
     # 모든 trial 정리
@@ -155,7 +167,8 @@ def sub1_test_dataset(args): # sub단위로 실행
     '''
     image_info = []
     for fmri_path in fmri_files:
-        tsv_path = fmri_path.replace('_desc-betaroizscore.nii.gz', '_task-image_events.tsv')
+        # tsv_path = fmri_path.replace('_desc-betaroizscore.nii.gz', '_task-image_events.tsv')
+        tsv_path = fmri_path.replace('_desc-betaroizscore.npy', '_task-image_events.tsv')
         df = pd.read_csv(tsv_path, sep='\t')
         test_df = df[df['train'] == 0].copy()
 
@@ -200,13 +213,12 @@ def get_dataloader(args):
     
     if args.mode == 'train':
         train_dataset = sub1_train_dataset(args)
-        sampler = DistributedSampler(train_dataset, num_replicas=args.world_size, rank=args.rank, shuffle=True) # ddp를 위한 분산 데이터
-        train_loader = DataLoader(train_dataset, batch_size=args.batch_size, num_workers=args.num_workers, pin_memory=True, sampler=sampler)
+        train_loader = DataLoader(train_dataset, batch_size=args.batch_size, num_workers=args.num_workers, prefetch_factor=args.prefetch_factor, persistent_workers=False, pin_memory=True)
         return train_loader
     
-    if args.mode == 'test':
+    if args.mode == 'inference':
         test_dataset = sub1_test_dataset(args)
-        test_loader = DataLoader(test_dataset, batch_size=args.batch_size, num_workers=args.num_workers, pin_memory=True, shuffle=False)
+        test_loader = DataLoader(test_dataset, batch_size=args.inference_batch_size, num_workers=args.num_workers, prefetch_factor=args.prefetch_factor, persistent_workers=False, pin_memory=True)
         return test_loader
     
     

@@ -1,5 +1,6 @@
 import os
 import gc
+import atexit
 
 import torch
 import torch.multiprocessing as mp
@@ -13,162 +14,138 @@ from mindeye1 import get_model_highlevel
 from optimizers import get_optimizer
 from schedulers import get_scheduler
 from metrics import get_metric
-from trainer import train, evaluate
+from trainer import train, inference, evaluate
 from utils import get_unique_path
 
-# def main():
-#     # parse_args 정의
-#     args = parse_args()
-
-#     #### train ####
-#     # data loader
-#     train_data = get_dataloader(args)
-
-#     # model 정의
-#     models = get_model_highlevel(args) 
-#     model_bundle = {
-#         "clip": models["clip"].to(args.device),
-#         "diffusion_prior": models["diffusion_prior"].to(args.device),
-#     }
-
-#     # optimizer 정의
-#     optimizer = get_optimizer(args, model_bundle["diffusion_prior"])
-
-#     # scheduler 정의(train만 함)
-#     train_dataset = sub1_train_dataset(args)
-#     num_train = len(train_dataset) 
-#     lr_scheduler = get_scheduler(args, optimizer, num_train)
-
-#     # wandb 적용
-#     wandb.login() # login
-#     wandb.init(project="neural_decoding", name=f"run-{wandb.util.generate_id()}") # init
-#     wandb.config = vars(args) # aparse_args()의 내용 그대로 config로 주기
-
-#     # train 시작
-#     output_model = train(args, train_data, model_bundle, optimizer, lr_scheduler)
-
-#     # model 저장
-#     output_path = os.path.join(args.root_dir, args.code_dir, args.output_dir, args.model_name)
-#     output_path = get_unique_path(output_path)
-#     os.makedirs(os.path.dirname(output_path), exist_ok=True)  # 경로 없으면 생성
-#     torch.save(output_model.state_dict(), output_path)
-
-#     # gpu에서 train 비우기
-#     del train_data, train_dataset, optimizer, lr_scheduler, output_model, model_bundle
-#     gc.collect()
-#     torch.cuda.empty_cache()
-
-#     #### evalutate ####
-#     setattr(args, 'mode', 'test')
-#     test_data = get_dataloader(args)
-
-#     model_bundle = {
-#         "clip": models["clip"].to(args.device),
-#         "diffusion_prior": models["diffusion_prior"].to(args.device),
-#         "vd_pipe": models["vd_pipe"].to(args.device), # inference에서만 사용
-#         "unet": models["unet"].to(args.device), # inference에서만 사용
-#         "vae": models["vae"].to(args.device), # inference에서만 사용
-#         "noise_scheduler": models["noise_scheduler"], # inference에서만 사용
-#     }
-
-#     metrics = get_metric(args)
-#     metric_bundle = {
-#         "pixcorr": metric_bundle["pixcorr"],
-#         "ssim": metric_bundle["ssim"],
-#         "clip": {
-#             "model": metric_bundle["clip"]["model"].to(args.device),
-#             "preprocess": metric_bundle["clip"]["preprocess"],
-#             "metric_fn": metric_bundle["clip"]["metric_fn"],
-#         },
-#         "alexnet2": {
-#             "model": metric_bundle["alexnet2"]["model"].to(args.device),
-#             "preprocess": metric_bundle["alexnet2"]["preprocess"],
-#             "layer": metric_bundle["alexnet2"]["layer"],
-#             "metric_fn": metric_bundle["alexnet2"]["metric_fn"],
-#         },
-#         "alexnet5": {
-#             "model": metric_bundle["alexnet5"]["model"].to(args.device),
-#             "preprocess": metric_bundle["alexnet5"]["preprocess"],
-#             "layer": metric_bundle["alexnet5"]["layer"],
-#             "metric_fn": metric_bundle["alexnet5"]["metric_fn"],
-#         },
-#         "inception": {
-#             "model": metric_bundle["inception"]["model"].to(args.device),
-#             "preprocess": metric_bundle["inception"]["preprocess"],
-#             "metric_fn": metric_bundle["inception"]["metric_fn"],
-#         },
-#     }
-
-#     result_values = evaluate(args, test_data, model_bundle, output_path, metric_bundle)
-
-#     # metric 저장
-#     txt_path = os.path.join(args.root_dir, args.output_dir, "evaluation_results.txt")
-#     with open(txt_path, "w") as f:
-#         for name, score in result_values.items():
-#             f.write(f"{name}: {score:.4f}\n")
-
 def main():
+    # parse_args 정의
     args = parse_args()
 
-    rank = int(os.environ["RANK"]) # 환경변수에서 받아옴
-    world_size = int(os.environ["WORLD_SIZE"]) # 환경변수에서 받아옴
-    train_evatluate_ddp(rank, world_size, args)
+    if args.mode == "train":
+        #### train ####
+        # data loader
+        train_data = get_dataloader(args)
 
-def train_evatluate_ddp(rank, world_size, args):
-    # multi-gpu 연결
-    setup(rank, world_size)
- 
-    # 현재 프로세스가 사용할 GPU 설정
-    torch.cuda.set_device(rank)
-    args.device = torch.device(f"cuda:{rank}")
-    
-    #### train ####
-    # data loader(분산 데이터로더) 
-    setattr(args, 'rank', rank)
-    setattr(args, 'world_size', world_size)
-    train_data = get_dataloader(args)
-    
-    # model 정의(DDP wrapping)
-    models = get_model_highlevel(args)
-    prior_model = models["diffusion_prior"].to(args.device) # gpu memory에 1개만 올리기 위해 변수 지정 -> 아래 딕셔너리에서는 주소기반  이기 때문에 2개 안올라감 
-    model_bundle = {
-        "clip": models["clip"].to(args.device),
-        "diffusion_prior": prior_model, # multi-gpu로 나누지 않을 때 사용 ex) optimizer는 일반 모델이 필요
-        "diffusion_prior_ddp": DDP(prior_model, device_ids=[rank]), # multi-gpu로 나눠질 때만 사용
-    }
-   
-    # optimizer 정의
-    optimizer = get_optimizer(args, model_bundle["diffusion_prior"])
+        # model 정의
+        models = get_model_highlevel(args) 
+        model_bundle = {
+            "clip": models["clip"].to(args.device),
+            "diffusion_prior": models["diffusion_prior"].to(args.device),
+        }
 
-    # scheduler 정의
-    train_dataset = sub1_train_dataset(args)
-    num_train = len(train_dataset)
-    lr_scheduler = get_scheduler(args, optimizer, world_size, num_train)
+        # optimizer 정의
+        optimizer = get_optimizer(args, model_bundle["diffusion_prior"])
 
-    # wandb적용(rank 0에서만 초기화)
-    if rank == 0:
-        wandb.login()
+        # scheduler 정의(train만 함)
+        train_dataset = sub1_train_dataset(args)
+        num_train = len(train_dataset) 
+        lr_scheduler = get_scheduler(args, optimizer, num_train)
+
+        # wandb 적용
+        wandb.login() # login
         wandb.init(project="neural_decoding", name=f"run-{wandb.util.generate_id()}") # init
         wandb.config = vars(args) # aparse_args()의 내용 그대로 config로 주기
 
-    # train 시작
-    trained_model = train(args, train_data, model_bundle, optimizer, lr_scheduler)
+        # train 시작
+        output_model = train(args, train_data, model_bundle, optimizer, lr_scheduler)
 
-    # model 저장(rank 0에서만 저장)
-    if rank == 0:
-        output_path = os.path.join(args.root_dir, args.code_dir, args.output_dir, args.model_name)
+        # model 저장
+        output_path = os.path.join(args.root_dir, args.code_dir, args.output_dir, args.model_name + ".pt")
         output_path = get_unique_path(output_path)
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        torch.save(trained_model.module.state_dict(), output_path)  # DDP이므로 .module 사용
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)  # 경로 없으면 생성
+        torch.save(output_model.state_dict(), output_path)
 
-    # process 그룹을 깨끗이 해제
-    cleanup()
+        # gpu에서 train 비우기
+        del train_data, train_dataset, optimizer, lr_scheduler, output_model, model_bundle
+        gc.collect()
+        torch.cuda.empty_cache()
 
-def setup(rank, world_size):
-    dist.init_process_group("nccl", rank=rank, world_size=world_size)
+        setattr(args, 'mode', 'inference')
+    
+    #### inference ####
+    if args.mode == "inference":
+        # data loader
+        test_data = get_dataloader(args)
 
-def cleanup():
-    dist.destroy_process_group()
+        # model 정의
+        models = get_model_highlevel(args) 
+        model_bundle = {
+            "clip": models["clip"].to(args.device),
+            "diffusion_prior": models["diffusion_prior"].to(args.device),
+            "vd_pipe": models["vd_pipe"].to(args.device), # inference에서만 사용
+            "unet": models["unet"].to(args.device), # inference에서만 사용
+            "vae": models["vae"].to(args.device), # inference에서만 사용
+            "noise_scheduler": models["noise_scheduler"], # inference에서만 사용
+        }
+
+        # model불러오기 위해 path저장
+        try:
+            _ = output_path.shape
+        except:
+            output_path = os.path.join(args.root_dir, args.code_dir, args.output_dir, 'mindeye1_1.pt') # mindeye1.pt이 
+        
+        all_recons, all_targets = inference(args, test_data, model_bundle, output_path)
+
+        # inference 저장
+        cache_path = os.path.join(args.root_dir, args.code_dir, args.output_dir, args.recon_name + ".pt")  # 저장 경로 설정
+        cache_path = get_unique_path(cache_path)  # 중복 방지용 새 경로 생성
+        torch.save({"all_recons": all_recons, "all_targets": all_targets}, cache_path)
+
+        # gpu에서 inference 비우기
+        del test_data, model_bundle
+        gc.collect()
+        torch.cuda.empty_cache()
+
+        setattr(args, 'mode', 'evaluate')
+
+    #### evalutate ####
+    if args.mode == "evaluate":
+        # metric 정의
+        metrics = get_metric(args)
+        metric_bundle = {
+            "pixcorr": metrics["pixcorr"],
+            "ssim": metrics["ssim"],
+            "clip": {
+                "model": metrics["clip"]["model"].to(args.device),
+                "preprocess": metrics["clip"]["preprocess"],
+                "metric_fn": metrics["clip"]["metric_fn"],
+            },
+            "alexnet2": {
+                "model": metrics["alexnet2"]["model"].to(args.device),
+                "preprocess": metrics["alexnet2"]["preprocess"],
+                "layer": metrics["alexnet2"]["layer"],
+                "metric_fn": metrics["alexnet2"]["metric_fn"],
+            },
+            "alexnet5": {
+                "model": metrics["alexnet5"]["model"].to(args.device),
+                "preprocess": metrics["alexnet5"]["preprocess"],
+                "layer": metrics["alexnet5"]["layer"],
+                "metric_fn": metrics["alexnet5"]["metric_fn"],
+            },
+            "inception": {
+                "model": metrics["inception"]["model"].to(args.device),
+                "preprocess": metrics["inception"]["preprocess"],
+                "metric_fn": metrics["inception"]["metric_fn"],
+            },
+        }
+
+        try: 
+            _ = all_recons.shape
+        except:
+            cache_path = os.path.join(args.root_dir, args.code_dir, args.output_dir, "mindeye1_recon.pt")
+            cache = torch.load(cache_path, map_location="cpu")
+            all_recons = cache["all_recons"]
+            all_targets = cache["all_targets"]
+            
+        metric_results = evaluate(args, all_recons, all_targets, metric_bundle)
+
+        # metric 저장
+        txt_path = os.path.join(args.root_dir, args.code_dir, args.output_dir, args.metrics_name + ".txt")
+        txt_path = get_unique_path(cache_path)
+        with open(txt_path, "w") as f:
+            for name, score in metric_results.items():
+                f.write(f"{name}: {score:.4f}\n")
+
 
 if __name__ == "__main__":
     main()

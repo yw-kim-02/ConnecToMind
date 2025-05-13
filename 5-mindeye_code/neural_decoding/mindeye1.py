@@ -169,9 +169,10 @@ class BrainNetwork(nn.Module):
             # assert x.shape[1] == 81 and x.shape[2] == 104 and x.shape[3] == 83, "fMRI data shape 안 맞음" # [N, 81, 104, 83]은 nsd genaral roi이다
             assert x.shape[1] == 120 and x.shape[2] == 120 and x.shape[3] == 84, "fMRI data shape 안 맞음" # [N, 120, 120, 84]은 nsd raw data이다.
             x = x.reshape(x.shape[0], -1) # [N, 1209600]
-
+        
         # MLP back born
-        x = self.lin0(x)  # bs, h
+        x = self.lin0[0](x)  # bs, h
+
         residual = x
         for res_block in range(self.n_blocks): # block 개수 4개
             x = self.mlp[res_block](x)
@@ -809,7 +810,6 @@ def get_model_highlevel(args):
     dim_head = 64 # head당 dim
     heads = args.clip_size//dim_head # attention head 수
     timesteps = 100 # difusion step 수 
-    guidance_scale = 3.5 # cfg inference할 때 사용 
     
     prior_network = VersatileDiffusionPriorNetwork(
         dim=out_dim,

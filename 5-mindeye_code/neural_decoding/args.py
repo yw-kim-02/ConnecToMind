@@ -15,7 +15,7 @@ def parse_args():
         help="Path to the BIDS fmri."
     )
     parser.add_argument(
-        "--fmri_detail_dir", type=str, default="b4_roi_zscore",
+        "--fmri_detail_dir", type=str, default="new_b4_roi_zscore",
         choices=["b4_roi_zscore"],
         help="Path to the BIDS fmri_detail."
     )
@@ -24,26 +24,30 @@ def parse_args():
         help="Path to the BIDS image."
     )
     parser.add_argument(
-        '--mode', type=str, choices=['train', 'test'], default='train',
-        help="train과 test 구분"
-    )
-    parser.add_argument(
         "--seed",type=int,default=42,
     )
     parser.add_argument(
-        "--batch_size", type=int, default=20,
+        '--mode', type=str, choices=['train', 'inference', 'evaluate'], default='inference',
+        help="train, inference, evaluate 구분"
+    )
+    parser.add_argument(
+        "--batch_size", type=int, default=60,
         help="Batch size can be increased by 10x if only training v2c and not diffusion prior",
     )
     parser.add_argument(
-        "--num_workers", type=int, default=10, choices=[4,8,12,16,20],
-        help="multi-processing in dataloader",
+        "--prefetch_factor", type=int, default=10, choices=[2,4,6,8],
+        help="한 프로세스에서 몇 개 처리할지",
     )
     parser.add_argument(
-        "--num_epochs",type=int,default=3, choices=[3,240],
+        "--num_workers", type=int, default=30, choices=[4,8,12,16,20],
+        help="multi-processing in dataloader-메모리와 cpu개수에 맞게 조정",
+    )
+    parser.add_argument(
+        "--num_epochs",type=int,default=240, choices=[3,240],
         help="epoch 개수",
     )
     parser.add_argument(
-        "--is_shuffle",type=argparse.BooleanOptionalAction,default=True,
+        "--is_shuffle",type=argparse.BooleanOptionalAction,default=False,
         help="is shuffle",
     )
     parser.add_argument(
@@ -58,15 +62,15 @@ def parse_args():
 
     ###### mindeye1 ######
     parser.add_argument(
-        "--subj",type=int, default=1, choices=[1,2,5,7],
-    )
-    parser.add_argument(
-        "--device",type=str,default="cuda",
+        "--device",type=str,default="cuda:2",
         help='device',
     )
     parser.add_argument(
+        "--subj",type=int, default=1, choices=[1,2,5,7],
+    )
+    parser.add_argument(
         "--clip_size",type=int,default=768,
-        help='clip embedding 크기기',
+        help='clip embedding 크기',
     )
     parser.add_argument(
         "--token_size",type=int,default=257,
@@ -76,10 +80,6 @@ def parse_args():
         "--clip_variant",type=str,default="ViT-L/14",
         choices=["RN50", "ViT-L/14", "ViT-B/32", "RN50x64"],
         help='OpenAI clip variant',
-    )
-    parser.add_argument(
-        "--timesteps_prior",type=int,default=100,
-        help="prior inference timeestep개수",
     )
     parser.add_argument(
         "--norm_embs",action=argparse.BooleanOptionalAction,default=True,
@@ -137,55 +137,22 @@ def parse_args():
         help="versatile inference batch size",
     )
     parser.add_argument(
-        "--recons_per_sample", type=int, default=16,
+        "--recons_per_sample", type=int, default=4,
         help= "한 frmi로 몇 개 sampling할 지"
     )
     parser.add_argument(
         "--num_inference_steps", type=int, default=20,
         help= "versatile inference step"
     )
+    parser.add_argument(
+        "--recon_name", type=str, default="mindeye1_recon",
+        help="recon 캐시 이름"
+    )
+    parser.add_argument(
+        "--metrics_name", type=str, default="mindeye1_metric",
+        help="metric 결과 이름"
+    )
     ####################
-
-
-    
-    parser.add_argument(
-        "--wandb_log",action=argparse.BooleanOptionalAction,default=False,
-        help="whether to log to wandb",
-    )
-    parser.add_argument(
-        "--resume_from_ckpt",action=argparse.BooleanOptionalAction,default=False,
-        help="if not using wandb and want to resume from a ckpt",
-    )
-    parser.add_argument(
-        "--wandb_project",type=str,default="stability",
-        help="wandb project name",
-    )
-    
-    parser.add_argument(
-        "--use_image_aug",action=argparse.BooleanOptionalAction,default=True,
-        help="whether to use image augmentation",
-    )
-
-
-
-    parser.add_argument(
-        "--ckpt_saving",action=argparse.BooleanOptionalAction,default=True,
-    )
-    parser.add_argument(
-        "--ckpt_interval",type=int,default=5,
-        help="save backup ckpt and reconstruct every x epochs",
-    )
-    parser.add_argument(
-        "--save_at_end",action=argparse.BooleanOptionalAction,default=False,
-        help="if True, saves best.ckpt at end of training. if False and ckpt_saving==True, will save best.ckpt whenever epoch shows best validation score",
-    )
-
-    
-    
-
-
-    
-    
 
     # Jupyter 환경에서는 빈 리스트를 전달해야 실행이 됨
     if any("ipykernel_launcher" in arg for arg in sys.argv):

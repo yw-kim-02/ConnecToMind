@@ -13,7 +13,7 @@ from torch.cuda.amp import autocast, GradScaler
 from torch.utils.data.distributed import DistributedSampler
 from torch.profiler import profile, record_function, ProfilerActivity
 
-from utils import img_augment, mixup, mixco_nce_loss, cosine_anneal, soft_clip_loss, topk, batchwise_cosine_similarity, get_unique_path, reconstruction
+from utils import img_augment, mixup, mixco_nce_loss, cosine_anneal, soft_clip_loss, topk, batchwise_cosine_similarity, log_gradient_norms, check_nan_and_log, reconstruction, plot_best_images
 
 def train(args, data, models, optimizer, lr_scheduler):
 
@@ -27,18 +27,15 @@ def train(args, data, models, optimizer, lr_scheduler):
     
     # model 정의
     clip_extractor = models["clip"]
-    diffusion_prior = models["diffusion_prior_ddp"]
+    diffusion_prior = models["diffusion_prior"]
     optimizer = optimizer
     lr_scheduler = lr_scheduler
 
     # log list
     losses, lrs = [], []
 
-    progress_bar = tqdm(range(0, num_epochs), ncols=1200) if args.rank == 0 else range(0, num_epochs) # 0번 GPU만 tqdm적용
+    progress_bar = tqdm(range(0, num_epochs), ncols=1200)
     for epoch in progress_bar:
-        # epoch 바뀔때 마다 gpu에 들어가는 data shuffle 
-        if isinstance(data.sampler, DistributedSampler): # data.sampler가 DistributedSampler의 method인지 확인
-            data.sampler.set_epoch(epoch) 
         
         diffusion_prior.train()
 
@@ -50,6 +47,9 @@ def train(args, data, models, optimizer, lr_scheduler):
         loss_prior_sum = 0.0 # prior loss의 누적합 -> 평균 구할 때 쓰임
 
         for index, (fmri_vol, image) in enumerate(data): # enumerate: index와 값을 같이 반환
+            # global step 계산
+            global_step = epoch * len(data) + index
+            
             # gradient 초기화
             optimizer.zero_grad() 
 
@@ -69,12 +69,12 @@ def train(args, data, models, optimizer, lr_scheduler):
                 # target 정의
                 clip_target = clip_extractor.embed_image(image).float()
                 # forward(MLP backbone) -> prior에 들어갈 embedding생성
-                clip_voxels, clip_voxels_proj = diffusion_prior.module.voxel2clip(fmri_vol)
+                clip_voxels, clip_voxels_proj = diffusion_prior.voxel2clip(fmri_vol)
                 clip_voxels = clip_voxels.view(len(fmri_vol),-1,clip_size) # [B, (257 * 768)] -> [B, 257, 768]
 
                 # forward(Diffusion prior) -> prior loss
                 prior_loss, clip_voxels_prediction = diffusion_prior(text_embed=clip_voxels, image_embed=clip_target) # text(prediction) = fMRI, image(label) = image
-                clip_voxels_prediction = clip_voxels_prediction / diffusion_prior.module.image_embed_scale # scale한 것을 원상태로 대돌려 놓음
+                clip_voxels_prediction = clip_voxels_prediction / diffusion_prior.image_embed_scale # scale한 것을 원상태로 대돌려 놓음
                 # forward(MLP projector) -> contrstive loss(mixco_nce_loss + soft_clip_loss)
                 clip_voxels_norm = nn.functional.normalize(clip_voxels_proj.flatten(1), dim=-1) # cosine simility를 위해 미리 nomalization
                 clip_target_norm = nn.functional.normalize(clip_target.flatten(1), dim=-1) # cosine simility를 위해 미리 nomalization
@@ -96,9 +96,18 @@ def train(args, data, models, optimizer, lr_scheduler):
                 # 최종 loss 정의 
                 loss = nce_loss + (prior_loss_coefficient * prior_loss)
 
+                # NaN 체크 + 넘김
+                if check_nan_and_log(global_step=index, fmri_vol=fmri_vol, clip_voxels=clip_voxels, loss=loss):
+                    continue
+
                 #### backward 계산 + update ####
                 # gradient 계산 - amp사용
                 scaler.scale(loss).backward() # amp사용
+
+                # # gradient clipping 처리
+                log_gradient_norms(diffusion_prior, global_step)
+                # scaler.unscale_(optimizer) # scaler.step(optimizer)하면 알아서 다시 scale됨
+                # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 
                 # optimizer update - amp사용
                 scaler.step(optimizer) # amp사용
@@ -132,22 +141,30 @@ def train(args, data, models, optimizer, lr_scheduler):
                     "train/loss": losses[-1],
                     "train/loss_nce": nce_loss,
                     "train/loss_prior": prior_loss,
+
+                    "debug/fmri_nan": float(torch.isnan(fmri_vol).any().item()),
+                    "debug/fmri_min": fmri_vol.min().item(),
+                    "debug/fmri_max": fmri_vol.max().item(),
+                    "debug/voxel2clip_nan": float(torch.isnan(clip_voxels).any().item()),
+                    "debug/voxel2clip_min": clip_voxels.min().item(),
+                    "debug/voxel2clip_max": clip_voxels.max().item(),
+                    "debug/loss_nan": float(torch.isnan(loss).item()),
+
                     "train/cosine_sim_mean": sims_base / len(losses),
                     "train/fwd_pct_correct_mean": fwd_percent_correct / len(losses),
                     "train/bwd_pct_correct_mean": bwd_percent_correct / len(losses),
+
                 }
-                if args.rank == 0:
-                    progress_bar.set_postfix(**logs) # cli에 시각화
-                    wandb.log(logs) # wandb에 시각화
+                progress_bar.set_postfix(**logs) # cli에 시각화
+                wandb.log(logs, step=global_step) # wandb에 시각화
 
     return diffusion_prior
 
-def evaluate(args, data, models, model_path, metrics):
+def inference(args, data, models, model_path):
 
     device = args.device
     seed = args.seed
     clip_size = args.clip_size
-    timesteps_prior = args.timesteps_prior
     recons_per_sample = args.recons_per_sample
     num_inference_steps = args.num_inference_steps
 
@@ -155,18 +172,19 @@ def evaluate(args, data, models, model_path, metrics):
     
     # model 정의 + train된 파라미터 불러오기
     clip_extractor = models["clip"]
+    diffusion_prior = models["diffusion_prior"]
 
     state_dict = torch.load(model_path, map_location=args.device) # 파라미터 불러오기
-    diffusion_prior = models["diffusion_prior"].load_state_dict(state_dict)
+    diffusion_prior.load_state_dict(state_dict)
     
-    vd_pipe = models["vd_pipe"]
     unet = models["unet"]
     vae = models["vae"]
     noise_scheduler = models["noise_scheduler"]
 
     # metric 
     all_recons = []
-    all_image = []
+    all_targets = []
+    all_best_imgs = []
 
     diffusion_prior.eval()
     progress_bar = tqdm(enumerate(data), total=len(data), ncols=120)
@@ -177,82 +195,87 @@ def evaluate(args, data, models, model_path, metrics):
             generator = torch.Generator(device=device)
             generator.manual_seed(seed)
 
-            # data gpu 올리기
+            # data + gpu 올리기
             fmri_vol = fmri_vol.to(device)   # fMRI -> GPU
             image = image.to(device)         # Image -> GPU
 
-            # target 정의
-            clip_target = clip_extractor.embed_image(image).float()
-
             # forward(MLP backbone) 
-            clip_voxels, clip_voxels_proj = diffusion_prior.module.voxel2clip(fmri_vol)
+            clip_voxels, clip_voxels_proj = diffusion_prior.voxel2clip(fmri_vol)
             clip_voxels = clip_voxels.view(len(fmri_vol),-1,clip_size) # [B, (257 * 768)] -> [B, 257, 768]
+
             proj_embeddings = clip_voxels_proj.cpu() # pick 할 때만 사용되어서 cpu로 내림
 
             # forward(diffusion prior) 
             clip_voxels = clip_voxels.repeat_interleave(recons_per_sample, dim=0) # [B×(recons_per_sample), 257, 768] -> ex) 1번,1번,1번,2번,2번,2번,...
             # diffusion prior 결과
-            brain_clip_embeddings = diffusion_prior.module.p_sample_loop(clip_voxels.shape, 
+            brain_clip_embeddings = diffusion_prior.p_sample_loop(clip_voxels.shape, 
                                     text_cond = dict(text_embed = clip_voxels), 
-                                    cond_scale = 1., timesteps = timesteps_prior, generator=generator) 
+                                    cond_scale = 1., generator=generator) 
 
             # forward(versatile diffusion) 
             _, _, _, best_img = reconstruction(
-                brain_clip_embeddings, image,
+                brain_clip_embeddings, proj_embeddings, image,
                 clip_extractor, unet, vae, noise_scheduler,
                 seed,
+                device,
                 num_inference_steps,
                 recons_per_sample, # mindeye에서는 16개
                 inference_batch_size=fmri_vol.shape[0], # batch 중에서 몇 개만 저장할지 -> inference batch와 같이 줄 것
                 img_lowlevel = None,
                 guidance_scale = 7.5,
                 img2img_strength = .85,
-                plotting=True,
+                plotting=False,
             )
 
             # metric을 위해 저장
             all_recons.append(best_img)       # 이미 CPU 상태
-            all_gts.append(image.cpu())        # GPU에서 내려야 함 (image는 아직 GPU)
+            all_targets.append(image.cpu())        # image를 GPU에서 내려야 함 (image는 아직 GPU)
+            all_best_imgs.extend([img for img in best_img])
 
     all_recons = torch.cat(all_recons, dim=0)  # [N, 3, H, W]
-    all_gts = torch.cat(all_gts, dim=0)
+    all_targets = torch.cat(all_targets, dim=0)
+
+    plot_best_images(all_best_imgs, row_size=5, save_path="all_best_recons.png")
+
+    return all_recons, all_targets
+
+def evaluate(args, all_recons, all_targets, metrics):
 
     #### Metric 계산 ####
     results = {}
 
     # PixCorr / SSIM
-    results["PixCorr"] = metrics["pixcorr"](all_recons, all_gts)
-    results["SSIM"] = metrics["ssim"](all_recons, all_gts)
+    results["PixCorr"] = metrics["pixcorr"](all_recons, all_targets)
+    results["SSIM"] = metrics["ssim"](all_recons, all_targets)
 
     # CLIP / AlexNet / Inception 
     results["CLIP"] = metrics["clip"]["metric_fn"](
-        all_recons, all_gts,
+        args, all_recons, all_targets,
         metrics["clip"]["model"],
         metrics["clip"]["preprocess"]
     )
 
     results["AlexNet_2"] = metrics["alexnet2"]["metric_fn"](
-        all_recons, all_gts,
+        args, all_recons, all_targets,
         metrics["alexnet2"]["model"],
         metrics["alexnet2"]["preprocess"],
         metrics["alexnet2"]["layer"]
     )
 
     results["AlexNet_5"] = metrics["alexnet5"]["metric_fn"](
-        all_recons, all_gts,
+        args, all_recons, all_targets,
         metrics["alexnet5"]["model"],
         metrics["alexnet5"]["preprocess"],
         metrics["alexnet5"]["layer"]
     )
 
     results["Inception"] = metrics["inception"]["metric_fn"](
-        all_recons, all_gts,
+        args, all_recons, all_targets,
         metrics["inception"]["model"],
         metrics["inception"]["preprocess"]
     )
     
     for name, score in results.items():
         print(f"{name:12}: {score:.4f}")
-    wandb.log(results) # wandb에 시각화
 
     return results
