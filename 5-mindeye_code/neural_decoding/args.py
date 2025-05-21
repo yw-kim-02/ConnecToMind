@@ -27,7 +27,7 @@ def parse_args():
         "--seed",type=int,default=42,
     )
     parser.add_argument(
-        '--mode', type=str, choices=['train', 'inference', 'evaluate'], default='inference',
+        '--mode', type=str, choices=['train', 'inference', 'evaluate'], default='train',
         help="train, inference, evaluate 구분"
     )
     parser.add_argument(
@@ -43,7 +43,7 @@ def parse_args():
         help="multi-processing in dataloader-메모리와 cpu개수에 맞게 조정",
     )
     parser.add_argument(
-        "--num_epochs",type=int,default=240, choices=[3,240],
+        "--num_epochs",type=int,default=270, choices=[3,240],
         help="epoch 개수",
     )
     parser.add_argument(
@@ -62,7 +62,7 @@ def parse_args():
 
     ###### mindeye1 ######
     parser.add_argument(
-        "--device",type=str,default="cuda:2",
+        "--device",type=str,default="cuda:3",
         help='device',
     )
     parser.add_argument(
@@ -90,8 +90,8 @@ def parse_args():
         help="if True, CLIP embeddings will come from last hidden layer (e.g., 257x768 - Versatile Diffusion), rather than final layer",
     )
     parser.add_argument(
-        "--vd_cache_dir", type=str, default='/nas/research/03-Neural_decoding/5-mindeye_code/pretrained_cache',
-        help="Where is cached Versatile Diffusion model; if not cached will download to this path",
+        "--cache_dir", type=str, default='/nas/research/03-Neural_decoding/5-mindeye_code/pretrained_cache',
+        help="Where is cached Diffusion model; if not cached will download to this path",
     )
     ####################
 
@@ -133,11 +133,11 @@ def parse_args():
         help="모델 이름"
     )
     parser.add_argument(
-        "--inference_batch_size",type=int,default=8,
+        "--inference_batch_size",type=int,default=10,
         help="versatile inference batch size",
     )
     parser.add_argument(
-        "--recons_per_sample", type=int, default=4,
+        "--recons_per_sample", type=int, default=1,
         help= "한 frmi로 몇 개 sampling할 지"
     )
     parser.add_argument(

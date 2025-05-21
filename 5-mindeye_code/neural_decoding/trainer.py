@@ -13,7 +13,7 @@ from torch.cuda.amp import autocast, GradScaler
 from torch.utils.data.distributed import DistributedSampler
 from torch.profiler import profile, record_function, ProfilerActivity
 
-from utils import img_augment, mixup, mixco_nce_loss, cosine_anneal, soft_clip_loss, topk, batchwise_cosine_similarity, log_gradient_norms, check_nan_and_log, reconstruction, plot_best_images
+from utils import img_augment_high, mixup, mixco_nce_loss, cosine_anneal, soft_clip_loss, topk, batchwise_cosine_similarity, log_gradient_norms, check_nan_and_log, reconstruction, plot_best_vs_gt_images
 
 def train(args, data, models, optimizer, lr_scheduler):
 
@@ -58,7 +58,7 @@ def train(args, data, models, optimizer, lr_scheduler):
             image = image.to(device, non_blocking=True)         # Image -> GPU
             
             # image augmentation
-            image = img_augment(image)
+            image = img_augment_high(image)
 
             # epoch의 1/3 지점 까지만 mixup 사용
             if epoch < int(mixup_pct * num_epochs):
@@ -181,15 +181,14 @@ def inference(args, data, models, model_path):
     vae = models["vae"]
     noise_scheduler = models["noise_scheduler"]
 
-    # metric 
+    # for metric 
     all_recons = []
     all_targets = []
-    all_best_imgs = []
 
     diffusion_prior.eval()
     progress_bar = tqdm(enumerate(data), total=len(data), ncols=120)
     for index, (fmri_vol, image) in progress_bar: # enumerate: index와 값을 같이 반환
-        with torch.no_grad():
+        with torch.inference_mode():
             #### forward inference ####
             # noise 난수 고정
             generator = torch.Generator(device=device)
@@ -222,7 +221,7 @@ def inference(args, data, models, model_path):
                 recons_per_sample, # mindeye에서는 16개
                 inference_batch_size=fmri_vol.shape[0], # batch 중에서 몇 개만 저장할지 -> inference batch와 같이 줄 것
                 img_lowlevel = None,
-                guidance_scale = 7.5,
+                guidance_scale = 3.5,
                 img2img_strength = .85,
                 plotting=False,
             )
@@ -230,12 +229,21 @@ def inference(args, data, models, model_path):
             # metric을 위해 저장
             all_recons.append(best_img)       # 이미 CPU 상태
             all_targets.append(image.cpu())        # image를 GPU에서 내려야 함 (image는 아직 GPU)
-            all_best_imgs.extend([img for img in best_img])
+
+            # 생성 image 저장
+            best_imgs = [img for img in all_recons[-1]]
+            gt_imgs = [img for img in all_targets[-1]]
+            
+            plot_best_vs_gt_images(
+                best_imgs,
+                gt_imgs,
+                index=index,
+                save_dir=os.path.join(args.root_dir, args.code_dir, args.output_dir, "recons"),
+                max_imgs=10
+            )
 
     all_recons = torch.cat(all_recons, dim=0)  # [N, 3, H, W]
     all_targets = torch.cat(all_targets, dim=0)
-
-    plot_best_images(all_best_imgs, row_size=5, save_path="all_best_recons.png")
 
     return all_recons, all_targets
 
@@ -279,3 +287,5 @@ def evaluate(args, all_recons, all_targets, metrics):
         print(f"{name:12}: {score:.4f}")
 
     return results
+
+

@@ -1,6 +1,7 @@
 import os
 import re
 import glob
+import random
 import pandas as pd
 import numpy as np
 
@@ -64,7 +65,7 @@ class TrainDataset(Dataset): # ses단위로 실행
         if self.transform:
             image = self.transform(image)
 
-        return fmri_vol, image
+        return fmri_vol, image, actual_idx
 
 class TestDataset(Dataset): # sub단위로 실행
     def __init__(self, fmri_info_list, image_path, mask_path, transform):
@@ -110,7 +111,7 @@ class TestDataset(Dataset): # sub단위로 실행
         if self.transform:
             image = self.transform(image)
 
-        return fmri_avg, image
+        return fmri_avg, image, actual_idx
 
 def sub1_train_dataset(args): # ses단위로 실행
 
@@ -208,19 +209,19 @@ def sub1_test_dataset(args): # sub단위로 실행
 
 def get_dataloader(args):
 
-    # 시드 고정
-    utils.seed_everything(args.seed) 
-    
     if args.mode == 'train':
         train_dataset = sub1_train_dataset(args)
-        train_loader = DataLoader(train_dataset, batch_size=args.batch_size, num_workers=args.num_workers, prefetch_factor=args.prefetch_factor, persistent_workers=False, pin_memory=True)
+        train_loader = DataLoader(train_dataset, batch_size=args.batch_size, num_workers=args.num_workers, prefetch_factor=args.prefetch_factor, persistent_workers=False, pin_memory=True, shuffle=True, worker_init_fn=worker_init_fn)
         return train_loader
     
     if args.mode == 'inference':
         test_dataset = sub1_test_dataset(args)
-        test_loader = DataLoader(test_dataset, batch_size=args.inference_batch_size, num_workers=args.num_workers, prefetch_factor=args.prefetch_factor, persistent_workers=False, pin_memory=True)
+        test_loader = DataLoader(test_dataset, batch_size=args.inference_batch_size, num_workers=args.num_workers, prefetch_factor=args.prefetch_factor, persistent_workers=False, pin_memory=True, worker_init_fn=worker_init_fn)
         return test_loader
     
-    
+def worker_init_fn(worker_id):
+    seed = torch.initial_seed() % 2**32  # worker별 고유 seed 생성
+    np.random.seed(seed)
+    random.seed(seed)    
 
     

@@ -24,6 +24,8 @@ from dalle2_pytorch.train_configs import DiffusionPriorNetworkConfig
 from dalle2_pytorch.dalle2_pytorch import RotaryEmbedding, CausalTransformer, SinusoidalPosEmb, MLP, Rearrange, repeat, rearrange, prob_mask_like, LayerNorm, RelPosBias, Attention, FeedForward
 
 # for low-level
+from diffusers import StableDiffusionPipeline
+from convnext import ConvnextXL
 from diffusers.models.vae import Decoder
 
 # get model
@@ -171,12 +173,12 @@ class BrainNetwork(nn.Module):
             x = x.reshape(x.shape[0], -1) # [N, 1209600]
         
         # MLP back born
-        x = self.lin0[0](x)  # bs, h
+        x = self.lin0(x) # bs, h
 
         residual = x
         for res_block in range(self.n_blocks): # block 개수 4개
             x = self.mlp[res_block](x)
-            x += residual
+            x += residual                                                                         
             residual = x
         x = x.reshape(len(x), -1)
         x = self.lin1(x)
@@ -530,6 +532,8 @@ class Voxel2StableDiffusionModel(torch.nn.Module):
         self.upsampler(4x,8x): mlp -> up sampling - shape: [batch_size, 4, 64, 64] 
         self.maps_projector(x).flatten(2).permute(0,2,1): mlp -> up sampling -> projection - shape: 4x-[batch_size, 256, 512], 8x-[batch_size, 64, 256]
         '''
+
+        # MLP = lin0 + lin1
         x = self.lin0(x)
         residual = x
         for res_block in self.mlp:
@@ -537,7 +541,7 @@ class Voxel2StableDiffusionModel(torch.nn.Module):
             x = x + residual
             residual = x
         x = x.reshape(len(x), -1)
-        x = self.lin1(x)  # bs, 4096
+        x = self.lin1(x)  # (b,4096) -> (b,16384)
 
         if self.ups_mode == '4x':
             side = 16
@@ -776,6 +780,62 @@ class BrainDiffusionPriorOld(DiffusionPrior):
         
         return diffusion_prior
 
+def get_model_lowlevel(args):
+
+    if args.subj == 1:
+        num_voxels = 15724
+    elif args.subj == 2:
+        num_voxels = 14278
+    elif args.subj == 3:
+        num_voxels = 15226
+    elif args.subj == 4:
+        num_voxels = 13153
+    elif args.subj == 5:
+        num_voxels = 13039
+    elif args.subj == 6:
+        num_voxels = 17907
+    elif args.subj == 7:
+        num_voxels = 12682
+    elif args.subj == 8:
+        num_voxels = 14386
+
+    #### voxel2autoencoder ####
+    # voxel2autoencoder 정의
+    voxel2sd = Voxel2StableDiffusionModel(in_dim=num_voxels)
+
+    # convnext + mlp 정의(loss에서만 사용)
+    cnx_path = os.path.join(args.cache_dir, "convnext_xlarge_alpha0.75_fullckpt.pth")
+    cnx = ConvnextXL(cnx_path)
+    cnx.requires_grad_(False)
+    cnx.eval()
+
+    #### encoder & decoder 정의 ####
+    try:
+        sd_model_dir = os.path.join(args.cache_dir, "models--lambdalabs--sd-image-variations-diffusers", "snapshots")
+        snapshot_path = os.path.join(sd_model_dir, os.listdir(sd_model_dir)[0])  # 첫 snapshot 선택
+        sd_pipe = StableDiffusionPipeline.from_pretrained(snapshot_path)
+    except: # 처음에는 모델 불러와야 함
+        sd_pipe = StableDiffusionPipeline.from_pretrained("lambdalabs/sd-image-variations-diffusers", cache_dir=args.cache_dir) 
+
+    # sd의 vae 정의
+    sd_pipe.vae.eval()
+    sd_pipe.vae.requires_grad_(False)
+
+    # sd의 scheduler 정의
+    scheduler_path = glob.glob(os.path.join(args.cache_dir, "models--lambdalabs--sd-image-variations-diffusers", "snapshots", "*", "scheduler"))[0]
+    vd_pipe.scheduler = UniPCMultistepScheduler.from_pretrained(scheduler_path)
+
+    vae = sd_pipe.vae
+    noise_scheduler = sd_pipe.scheduler
+
+    models = {
+        "voxel2sd": voxel2sd,
+        "clip": cnx,
+        "vae": sd_pipe.vae,
+        "noise_scheduler": sd_pipe.scheduler
+    }
+
+    return models
 
 def get_model_highlevel(args):
 
@@ -834,9 +894,10 @@ def get_model_highlevel(args):
 
     #### versatile difussion 정의(unet, vae, noise scheduler) ####
     try:
-        vd_pipe =  VersatileDiffusionDualGuidedPipeline.from_pretrained(args.vd_cache_dir).to(args.device)
+        vd_model_dir = os.path.join(args.cache_dir, "models--shi-labs--versatile-diffusion")
+        vd_pipe =  VersatileDiffusionDualGuidedPipeline.from_pretrained(vd_model_dir)
     except: # 처음에는 모델 불러와야 함
-        vd_pipe =  VersatileDiffusionDualGuidedPipeline.from_pretrained("shi-labs/versatile-diffusion", cache_dir = args.vd_cache_dir).to(args.device)
+        vd_pipe =  VersatileDiffusionDualGuidedPipeline.from_pretrained("shi-labs/versatile-diffusion", cache_dir = args.cache_dir)
     
     # versatile difussion의 unet 정의
     vd_pipe.image_unet.eval()
@@ -859,9 +920,8 @@ def get_model_highlevel(args):
     vd_pipe.vae.requires_grad_(False)
 
     # versatile difussion의 scheduler 정의
-    scheduler_path = glob.glob(os.path.join(args.vd_cache_dir, "models--shi-labs--versatile-diffusion", "snapshots", "*", "scheduler"))[0]
+    scheduler_path = glob.glob(os.path.join(args.cache_dir, "models--shi-labs--versatile-diffusion", "snapshots", "*", "scheduler"))[0]
     vd_pipe.scheduler = UniPCMultistepScheduler.from_pretrained(scheduler_path) # subfolder에서 parameter 가져옴
-    print(vd_pipe.scheduler)
 
     unet = vd_pipe.image_unet
     vae = vd_pipe.vae
@@ -877,3 +937,4 @@ def get_model_highlevel(args):
     }
 
     return models
+
