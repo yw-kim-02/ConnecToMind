@@ -43,5 +43,5 @@ def get_optimizer_lowlevel(args, model):
         }
     ]
 
-    if optimizer_type == 'adamw':
+    if args.optimizer.lower() == 'adamw':
         return adamw(opt_grouped_parameters, lr=1e-3)

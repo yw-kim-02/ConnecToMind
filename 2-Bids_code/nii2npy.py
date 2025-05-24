@@ -8,7 +8,7 @@ mask_path = f'/nas/research/03-Neural_decoding/3-bids/derivatives/new_b4_roi_zsc
 mask = nib.load(mask_path).get_fdata()
 mask_bool = mask > 0  # True for ROI voxel
 
-base_dir = f'/nas/research/03-Neural_decoding/3-bids/derivatives/new_b4_roi_zscore/{subj}'
+base_dir = f'/nas/research/03-Neural_decoding/3-bids/derivatives/b4_roi_new_zscore/{subj}'
 
 for sess_num in range(1, 41):
     sess_id = f"ses-{sess_num:02d}"

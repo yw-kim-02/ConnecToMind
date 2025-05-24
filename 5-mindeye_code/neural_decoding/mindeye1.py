@@ -24,15 +24,14 @@ from dalle2_pytorch.train_configs import DiffusionPriorNetworkConfig
 from dalle2_pytorch.dalle2_pytorch import RotaryEmbedding, CausalTransformer, SinusoidalPosEmb, MLP, Rearrange, repeat, rearrange, prob_mask_like, LayerNorm, RelPosBias, Attention, FeedForward
 
 # for low-level
-from diffusers import StableDiffusionPipeline
+from diffusers import DiffusionPipeline
 from convnext import ConvnextXL
-from diffusers.models.vae import Decoder
+from diffusers.models.autoencoder_kl import Decoder
 
 # get model
 import utils
 from diffusers import VersatileDiffusionDualGuidedPipeline, UniPCMultistepScheduler
 from diffusers.models import DualTransformer2DModel
-from optimizers import get_optimizer
 from schedulers import get_scheduler
 
 class Clipper(torch.nn.Module):
@@ -50,6 +49,8 @@ class Clipper(torch.nn.Module):
         self.preprocess = None # object를 변수로 저장
         self.mean = np.array([0.48145466, 0.4578275, 0.40821073]) # OpenAI CLIP이 학습한 이미지 데이터 셋의 평균
         self.std = np.array([0.26862954, 0.26130258, 0.27577711]) # OpenAI CLIP이 학습한 이미지 데이터 셋의 표준편차
+        self.normalize = transforms.Normalize(self.mean, self.std) # versatile low image vae 사용하기 전 normalize
+        self.denormalize = transforms.Normalize((-self.mean / self.std).tolist(), (1.0 / self.std).tolist())
         preprocess = transforms.Compose([
             transforms.Resize(size=self.clip_size[0], interpolation=transforms.InterpolationMode.BICUBIC),
             transforms.CenterCrop(size=self.clip_size),
@@ -59,7 +60,7 @@ class Clipper(torch.nn.Module):
 
         # embedding preprocess 변수
         self.clamp_embs = clamp_embs # embdding 후처리 유무 ex) -1.5 ~ 1.5 범위로 제한
-        self.norm_embs = norm_embs # embdding mromalization 유무
+        self.norm_embs = norm_embs # embdding normalization 유무
         
         # "RN50", "ViT-L/14", "ViT-B/32", "RN50x64" 중에 모델이 없으면 오류메세지 출력
         assert clip_variant in ("RN50", "ViT-L/14", "ViT-B/32", "RN50x64"), "clip_variant must be one of RN50, ViT-L/14, ViT-B/32, RN50x64" # assert문은 조건을 만족하지 않을 때 출력
@@ -467,7 +468,7 @@ class FlaggedCausalTransformer(nn.Module):
         return self.project_out(out)
     
 class Voxel2StableDiffusionModel(torch.nn.Module):
-    def __init__(self, in_dim=15724, h=4096, n_blocks=4, use_cont=False, ups_mode='4x'):
+    def __init__(self, in_dim=15724, h=4096, n_blocks=4, use_cont=True, ups_mode='4x'):
         super().__init__()
         self.lin0 = nn.Sequential(
             nn.Linear(in_dim, h, bias=False),
@@ -811,28 +812,28 @@ def get_model_lowlevel(args):
 
     #### encoder & decoder 정의 ####
     try:
+        # 전체 pipeline 로컬에서 로드
         sd_model_dir = os.path.join(args.cache_dir, "models--lambdalabs--sd-image-variations-diffusers", "snapshots")
-        snapshot_path = os.path.join(sd_model_dir, os.listdir(sd_model_dir)[0])  # 첫 snapshot 선택
-        sd_pipe = StableDiffusionPipeline.from_pretrained(snapshot_path)
-    except: # 처음에는 모델 불러와야 함
-        sd_pipe = StableDiffusionPipeline.from_pretrained("lambdalabs/sd-image-variations-diffusers", cache_dir=args.cache_dir) 
+        snapshot_name = os.listdir(sd_model_dir)  # 첫 snapshot
+        snapshot_path = os.path.join(sd_model_dir, snapshot_name[0])
 
-    # sd의 vae 정의
+        sd_pipe = DiffusionPipeline.from_pretrained(snapshot_path)
+    except Exception as e:
+        print(f"[!] 로컬 snapshot 로딩 실패, 온라인에서 전체 모델 로드: {e}")
+        sd_pipe = DiffusionPipeline.from_pretrained("lambdalabs/sd-image-variations-diffusers", cache_dir=args.cache_dir)
+
+    # 학습 비활성화
     sd_pipe.vae.eval()
     sd_pipe.vae.requires_grad_(False)
-
-    # sd의 scheduler 정의
-    scheduler_path = glob.glob(os.path.join(args.cache_dir, "models--lambdalabs--sd-image-variations-diffusers", "snapshots", "*", "scheduler"))[0]
-    vd_pipe.scheduler = UniPCMultistepScheduler.from_pretrained(scheduler_path)
-
+    
     vae = sd_pipe.vae
     noise_scheduler = sd_pipe.scheduler
 
     models = {
         "voxel2sd": voxel2sd,
-        "clip": cnx,
-        "vae": sd_pipe.vae,
-        "noise_scheduler": sd_pipe.scheduler
+        "cnx": cnx,
+        "vae": vae,
+        "noise_scheduler": noise_scheduler
     }
 
     return models
@@ -894,7 +895,10 @@ def get_model_highlevel(args):
 
     #### versatile difussion 정의(unet, vae, noise scheduler) ####
     try:
-        vd_model_dir = os.path.join(args.cache_dir, "models--shi-labs--versatile-diffusion")
+        # vd_model_dir = os.path.join(args.cache_dir, "models--shi-labs--versatile-diffusion")
+        vd_model_dir = os.path.join(args.cache_dir, "models--shi-labs--versatile-diffusion", "snapshots")
+        snapshot_name = os.listdir(vd_model_dir)  # 첫 snapshot
+        snapshot_path = os.path.join(vd_model_dir, snapshot_name[0])
         vd_pipe =  VersatileDiffusionDualGuidedPipeline.from_pretrained(vd_model_dir)
     except: # 처음에는 모델 불러와야 함
         vd_pipe =  VersatileDiffusionDualGuidedPipeline.from_pretrained("shi-labs/versatile-diffusion", cache_dir = args.cache_dir)
@@ -919,10 +923,6 @@ def get_model_highlevel(args):
     vd_pipe.vae.eval()
     vd_pipe.vae.requires_grad_(False)
 
-    # versatile difussion의 scheduler 정의
-    scheduler_path = glob.glob(os.path.join(args.cache_dir, "models--shi-labs--versatile-diffusion", "snapshots", "*", "scheduler"))[0]
-    vd_pipe.scheduler = UniPCMultistepScheduler.from_pretrained(scheduler_path) # subfolder에서 parameter 가져옴
-
     unet = vd_pipe.image_unet
     vae = vd_pipe.vae
     noise_scheduler = vd_pipe.scheduler
@@ -930,7 +930,6 @@ def get_model_highlevel(args):
     models = {
         "clip": clip_extractor,
         "diffusion_prior": diffusion_prior,
-        "vd_pipe": vd_pipe, # inference에서만 사용
         "unet": unet, # inference에서만 사용
         "vae": vae, # inference에서만 사용
         "noise_scheduler": noise_scheduler, # inference에서만 사용

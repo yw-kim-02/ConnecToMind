@@ -65,14 +65,16 @@ class TrainDataset(Dataset): # ses단위로 실행
         if self.transform:
             image = self.transform(image)
 
-        return fmri_vol, image, actual_idx
+        return fmri_vol, image
 
 class TestDataset(Dataset): # sub단위로 실행
-    def __init__(self, fmri_info_list, image_path, mask_path, transform):
+    def __init__(self, fmri_info_list, image_path, low_image_path, mask_path, transform, use_low_image):
         self.fmri_info_list = fmri_info_list  # 리스트: {'image_id': str, 'fmri_volumes': [(path1, idx1), (path2, idx2), (path3, idx3)]}
         self.image_path = image_path
+        self.low_image_path = low_image_path
         self.mask_path = mask_path
         self.transform = transform # PIL.Image -> tensor
+        self.use_low_image = use_low_image
 
         # mask처리 - sub마다 maskload(shape: (Z, Y, X))
         # sub = re.search(r"(sub-\d+)", self.fmri_info_list[0]['fmri_volumes'][0][0]).group(1)
@@ -107,11 +109,77 @@ class TestDataset(Dataset): # sub단위로 실행
         fmri_avg = torch.stack(fmri_vols).mean(0)  # mean(0): voxel-wise 평균 -> 결과 shape(X, Y, Z)
 
         image_path = os.path.join(self.image_path, image_id + '.jpg')
+        low_image_path = os.path.join(self.low_image_path, image_id + ".jpg")
+
+        image = Image.open(image_path).convert('RGB')
+        if self.transform:
+            image = self.transform(image)
+        
+        
+        if self.use_low_image:
+            low_image = Image.open(low_image_path).convert('RGB')
+            if self.transform:
+                low_image = self.transform(low_image)
+        else:
+            low_image = []
+
+        return fmri_avg, image, low_image, image_id
+    
+class hug_TrainDataset(Dataset): # ses단위로 실행
+    def __init__(self, fmri_path, image_path, transform):
+        self.data = np.load(fmri_path, mmap_mode='r', allow_pickle=True) # 포인터만 받아와서 메모리에 올라온 것은 아님
+        self.fmri = self.data['X']
+        self.cocoid = self.data['Y']
+        self.image_path = image_path
+        self.transform = transform # PIL.Image -> tensor
+       
+
+    def __len__(self):
+        return len(self.cocoid)
+
+    def __getitem__(self, idx): 
+        # fMRI 데이터 로딩
+        fmri_vol = torch.tensor(self.fmri[idx], dtype=torch.float32)
+
+        # 이미지 로딩
+        image_path = os.path.join(self.image_path, self.cocoid[idx])
         image = Image.open(image_path).convert('RGB')
         if self.transform:
             image = self.transform(image)
 
-        return fmri_avg, image, actual_idx
+        return fmri_vol, image
+
+class hug_TestDataset(Dataset): # ses단위로 실행
+    def __init__(self, fmri_path, image_path, low_image_path, transform, use_low_image):
+        self.data = np.load(fmri_path, mmap_mode='r', allow_pickle=True) # 포인터만 받아와서 메모리에 올라온 것은 아님
+        self.fmri = self.data['X']
+        self.cocoid = self.data['Y']
+        self.image_path = image_path
+        self.low_image_path = low_image_path
+        self.transform = transform # PIL.Image -> tensor
+        self.use_low_image = use_low_image
+
+    def __len__(self):
+        return len(self.cocoid)
+
+    def __getitem__(self, idx): 
+        # fMRI 데이터 로딩
+        fmri_vol = torch.tensor(self.fmri[idx], dtype=torch.float32)
+
+        # 이미지 로딩
+        image_path = os.path.join(self.image_path, self.cocoid[idx])
+        image = Image.open(image_path).convert('RGB')
+        if self.transform:
+            image = self.transform(image)
+
+        if self.use_low_image:
+            low_image = Image.open(self.low_image_path).convert('RGB')
+            if self.transform:
+                low_image = self.transform(low_image)
+        else:
+            low_image = []
+
+        return fmri_vol, image, low_image, self.cocoid[idx]
 
 def sub1_train_dataset(args): # ses단위로 실행
 
@@ -149,7 +217,10 @@ def sub1_test_dataset(args): # sub단위로 실행
     fmri_dir = args.fmri_dir
     fmri_detail_dir = args.fmri_detail_dir
     image_dir = args.image_dir
+    code_dir = args.code_dir
+    output_dir= args.output_dir
     transform = transforms.ToTensor()
+    use_low_image = args.use_low_image
 
     # 모든 nii 경로 뽑음
     # pattern = f"{root_dir}/{fmri_dir}/{fmri_detail_dir}/sub-01/ses-*/func/sub-01_ses-*_desc-betaroizscore.nii.gz"
@@ -201,21 +272,54 @@ def sub1_test_dataset(args): # sub단위로 실행
         })
     
     image_path = f"{root_dir}/{image_dir}"
+    low_image_path = f"{root_dir}/{code_dir}/{output_dir}/low_recons"
     mask_path = f"{root_dir}/{fmri_dir}/{fmri_detail_dir}/sub-01"
 
-    test_dataset = TestDataset(averaged_list, image_path, mask_path, transform)
+    test_dataset = TestDataset(averaged_list, image_path, low_image_path, mask_path, transform, use_low_image)
 
+    return test_dataset
+
+def sub1_train_dataset_hug(args):
+    root_dir = args.root_dir
+    fmri_dir = args.fmri_dir
+    fmri_detail_dir = args.fmri_detail_dir
+    image_dir = args.image_dir
+    transform = transforms.ToTensor()
+    
+    fmri_path = f"{root_dir}/{fmri_dir}/{fmri_detail_dir}/fmri_with_labels.npz"
+    image_path = f"{root_dir}/{image_dir}"
+ 
+    train_dataset = hug_TrainDataset(fmri_path, image_path, transform)
+    
+    return train_dataset
+
+def sub1_test_dataset_hug(args):
+    root_dir = args.root_dir
+    fmri_dir = args.fmri_dir
+    fmri_detail_dir = args.fmri_detail_dir
+    image_dir = args.image_dir
+    code_dir = args.code_dir
+    output_dir= args.output_dir
+    transform = transforms.ToTensor()
+    use_low_image = args.use_low_image
+    
+    fmri_path = f"{root_dir}/{fmri_dir}/{fmri_detail_dir}/fmri_with_labels_test.npz"
+    image_path = f"{root_dir}/{image_dir}"
+    low_image_path = f"{root_dir}/{code_dir}/{output_dir}/low_recons"
+ 
+    test_dataset = hug_TestDataset(fmri_path, image_path, low_image_path, transform, use_low_image)
+    
     return test_dataset
 
 def get_dataloader(args):
 
     if args.mode == 'train':
-        train_dataset = sub1_train_dataset(args)
+        train_dataset = sub1_train_dataset_hug(args)
         train_loader = DataLoader(train_dataset, batch_size=args.batch_size, num_workers=args.num_workers, prefetch_factor=args.prefetch_factor, persistent_workers=False, pin_memory=True, shuffle=True, worker_init_fn=worker_init_fn)
         return train_loader
     
     if args.mode == 'inference':
-        test_dataset = sub1_test_dataset(args)
+        test_dataset = sub1_test_dataset_hug(args)
         test_loader = DataLoader(test_dataset, batch_size=args.inference_batch_size, num_workers=args.num_workers, prefetch_factor=args.prefetch_factor, persistent_workers=False, pin_memory=True, worker_init_fn=worker_init_fn)
         return test_loader
     

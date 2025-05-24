@@ -206,7 +206,7 @@ def reconstruction(
     num_inference_steps = 50,
     recons_per_sample = 1, # mindeye에서는 16개
     inference_batch_size=1, # batch 중에서 몇 개만 저장할지 -> batch와 같이 줄 것
-    img_lowlevel = None, # low level image
+    img_lowlevel = True, # low level image
     guidance_scale = 3.5, # 기본 7.5
     img2img_strength = .85,
     plotting=True,
@@ -252,23 +252,27 @@ def reconstruction(
     
     # using low level image vs using pure noise
     if img_lowlevel is not None: # low level image에서 시작
+        # low level image를 주기 때문에 denoise step을 줄임
         init_timestep = min(int(num_inference_steps * img2img_strength), num_inference_steps)
         t_start = max(num_inference_steps - init_timestep, 0)
         timesteps = noise_scheduler.timesteps[t_start:]
-        latent_timestep = timesteps[:1].repeat(inference_batch_size)
+
+        # denoise 시작 step 구하기 ex) step start는 scalar라서 inference_batch_size만큼 만듬
+        latent_timestep = timesteps[:1].repeat(inference_batch_size) 
         
-        if verbose: print("img_lowlevel", img_lowlevel.shape)
+        # low level image를 vae 통과
         img_lowlevel_embeddings = clip_extractor.normalize(img_lowlevel)
-        if verbose: print("img_lowlevel_embeddings", img_lowlevel_embeddings.shape)
         init_latents = vae.encode(img_lowlevel_embeddings.to(device).to(vae.dtype)).latent_dist.sample(generator)
         init_latents = vae.config.scaling_factor * init_latents
-        init_latents = init_latents.repeat(recons_per_sample, 1, 1, 1)
+        init_latents = init_latents.repeat_interleave(recons_per_sample, dim=0)
+        print(init_latents.shape)
 
+        # low level image에 noise 씌움 = versatile 준비 완료
         noise = torch.randn([recons_per_sample, 4, 64, 64], device=device, 
                             generator=generator, dtype=input_embedding.dtype)
         init_latents = noise_scheduler.add_noise(init_latents, noise, latent_timestep)
         latents = init_latents
-    else: # pure noise에서 시작
+    else: # pure noise에서 시작 = versatile 준비 완료
         timesteps = noise_scheduler.timesteps
         latents = torch.randn([total_samples, 4, 64, 64], device=device,
                                 generator=generator, dtype=input_embedding.dtype)
@@ -401,7 +405,8 @@ def plot_best_vs_gt_images(best_imgs, gt_imgs, index, save_dir="outputs", max_im
     fig.savefig(save_path, bbox_inches="tight", dpi=150)
     plt.close(fig)
 
-def soft_cont_loss(student_preds, teacher_preds, teacher_aug_preds, temp=0.125, distributed=True):
+def soft_cont_loss(student_preds, teacher_preds, teacher_aug_preds, temp=0.125, distributed=False):
+    
     if not distributed:
         teacher_teacher_aug = (teacher_preds @ teacher_aug_preds.T)/temp
         teacher_teacher_aug_t = (teacher_aug_preds @ teacher_preds.T)/temp

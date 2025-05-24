@@ -9,7 +9,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 import wandb
 
 from args import parse_args
-from data import get_dataloader, sub1_train_dataset
+from data import get_dataloader, sub1_train_dataset, sub1_train_dataset_hug
 from mindeye1 import get_model_highlevel, get_model_lowlevel
 from optimizers import get_optimizer_highlevel, get_optimizer_lowlevel
 from schedulers import get_scheduler
@@ -170,7 +170,7 @@ def main_high_all():
     optimizer = get_optimizer_highlevel(args, model_bundle["diffusion_prior"])
 
     # scheduler 정의(train만 함)
-    train_dataset = sub1_train_dataset(args)
+    train_dataset = sub1_train_dataset_hug(args)
     num_train = len(train_dataset) 
     lr_scheduler = get_scheduler(args, optimizer, num_train)
 
@@ -208,7 +208,7 @@ def main_high_all():
     wandb.init(project="neural_decoding_highlevel", name=f"run-{wandb.util.generate_id()}") # init
     wandb.config = vars(args) # aparse_args()의 내용 그대로 config로 주기
 
-    models, metric_results = high_train_inference_evaluate(args, train_data, test_data, model_bundle, optimizer, lr_scheduler, metric_bundle)
+    high_train_inference_evaluate(args, train_data, test_data, model_bundle, optimizer, lr_scheduler, metric_bundle)
 
 def main_low_all():
     args = parse_args()
@@ -231,7 +231,7 @@ def main_low_all():
     optimizer = get_optimizer_lowlevel(args, model_bundle["voxel2sd"])
 
     # scheduler 정의(train만 함)
-    train_dataset = sub1_train_dataset(args)
+    train_dataset = sub1_train_dataset_hug(args)
     num_train = len(train_dataset) 
     lr_scheduler = get_scheduler(args, optimizer, num_train)
 
@@ -269,8 +269,9 @@ def main_low_all():
     wandb.init(project="neural_decoding_lowlevel", name=f"run-{wandb.util.generate_id()}") # init
     wandb.config = vars(args) # aparse_args()의 내용 그대로 config로 주기
 
-    models, metric_results = low_train_inference_evaluate(args, train_data, test_data, model_bundle, optimizer, lr_scheduler, metric_bundle)
+    low_train_inference_evaluate(args, train_data, test_data, model_bundle, optimizer, lr_scheduler, metric_bundle)
 
 if __name__ == "__main__":
     # main()
-    main_high_all()
+    # main_high_all()
+    main_low_all()

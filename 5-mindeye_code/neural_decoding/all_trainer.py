@@ -13,6 +13,7 @@ from torch.cuda.amp import autocast, GradScaler
 from torch.utils.data.distributed import DistributedSampler
 from torch.profiler import profile, record_function, ProfilerActivity
 import torch.nn.functional as F
+from torchvision.utils import save_image
 
 from utils import img_augment_high, img_augment_low, mixup, mixco_nce_loss, cosine_anneal, soft_clip_loss, topk, batchwise_cosine_similarity, log_gradient_norms, check_nan_and_log, reconstruction, plot_best_vs_gt_images, get_unique_path, soft_cont_loss
 
@@ -186,7 +187,7 @@ def high_train_inference_evaluate(args, train_data, test_data, models, optimizer
 
             diffusion_prior.eval()
             progress_bar = tqdm(enumerate(test_data), total=len(test_data), ncols=120)
-            for index, (fmri_vol, image) in progress_bar: # enumerate: index와 값을 같이 반환
+            for index, (fmri_vol, image, low_image, _) in progress_bar: # enumerate: index와 값을 같이 반환
                 with torch.inference_mode():
                     # noise 난수 고정
                     generator = torch.Generator(device=device)
@@ -195,6 +196,7 @@ def high_train_inference_evaluate(args, train_data, test_data, models, optimizer
                     # data + gpu 올리기
                     fmri_vol = fmri_vol.to(device)   # fMRI -> GPU
                     image = image.to(device)         # Image -> GPU
+                    low_image = low_image.to(device) 
                     
                     #### forward inference ####
                     # forward(MLP backbone) 
@@ -219,7 +221,7 @@ def high_train_inference_evaluate(args, train_data, test_data, models, optimizer
                         num_inference_steps,
                         recons_per_sample, # mindeye에서는 16개
                         inference_batch_size=fmri_vol.shape[0], # batch 중에서 몇 개만 저장할지 -> inference batch와 같이 줄 것
-                        img_lowlevel = None,
+                        img_lowlevel = low_image,
                         guidance_scale = 3.5,
                         img2img_strength = .85,
                         plotting=False,
@@ -313,7 +315,11 @@ def low_train_inference_evaluate(args, train_data, test_data, models, optimizer,
     optimizer = optimizer
     lr_scheduler = lr_scheduler
 
-    progress_bar = tqdm(range(0, num_epochs), ncols=1200)
+    # log list
+    losses = []
+    lrs = []
+
+    progress_bar = tqdm(range(0, 130), ncols=1200)
     for epoch in progress_bar:
 
         loss_mse_sum = 0
@@ -321,7 +327,7 @@ def low_train_inference_evaluate(args, train_data, test_data, models, optimizer,
 
         #### train ####
         voxel2sd.train()
-        for index, (fmri_vol, image, image_id) in enumerate(train_data): # enumerate: index와 값을 같이 반환
+        for index, (fmri_vol, image) in enumerate(train_data): # enumerate: index와 값을 같이 반환
             # global step 계산
             global_step = epoch * len(train_data) + index
             
@@ -332,9 +338,6 @@ def low_train_inference_evaluate(args, train_data, test_data, models, optimizer,
             fmri_vol = fmri_vol.to(device, non_blocking=True)   # fMRI -> GPU
             image = image.to(device, non_blocking=True)         # Image -> GPU
             image = F.interpolate(image, (512, 512), mode='bilinear', align_corners=False, antialias=True)
-            
-            # image augmentation
-            image = img_augment_low(image)
 
             with autocast():    
                 #### forward 계산 + loss 계산 ####
@@ -345,21 +348,21 @@ def low_train_inference_evaluate(args, train_data, test_data, models, optimizer,
                 image_enc_pred, transformer_feats = voxel2sd(fmri_vol, return_transformer_feats=True)
 
                 # contrastive loss
+                mean = torch.tensor([0.485, 0.456, 0.406]).to(device).reshape(1,3,1,1) # imagenet의 mean
+                std = torch.tensor([0.228, 0.224, 0.225]).to(device).reshape(1,3,1,1) # imagenet의 std
                 image_norm = (image - mean)/std
-                image_aug = (train_augs(image) - mean)/std
+                image_aug = (img_augment_low(image) - mean)/std
                 _, cnx_embeds = cnx(image_norm)
                 _, cnx_aug_embeds = cnx(image_aug)
                 cont_loss = soft_cont_loss(
                     F.normalize(transformer_feats.reshape(-1, transformer_feats.shape[-1]), dim=-1),
                     F.normalize(cnx_embeds.reshape(-1, cnx_embeds.shape[-1]), dim=-1),
                     F.normalize(cnx_aug_embeds.reshape(-1, cnx_embeds.shape[-1]), dim=-1),
-                    temp=0.075,
-                    distributed=distributed
+                    temp=0.075
                 )
 
                 # mse_loss 
                 mse_loss = F.l1_loss(image_enc_pred, image_enc_target)
-                del image_norm, image_aug, cnx_embeds, cnx_aug_embeds, transformer_feats, image, fmri_vol
 
                 # 최종 loss 정의 
                 loss = mse_loss/0.18215 + 0.1*cont_loss 
@@ -417,13 +420,16 @@ def low_train_inference_evaluate(args, train_data, test_data, models, optimizer,
         gc.collect() # # gpu 메모리 안 쓰는거 삭제
 
 
-        if epoch > 240 and epoch % 3 == 0:
+        if epoch > 120 and epoch % 3 == 0:
             #### inference ####
-            all_recons = {}
+            all_recons = []
+            all_targets = []
+            save_recons = {}
+            best_alexnet2_score = 0.0  
 
             voxel2sd.eval()
             progress_bar = tqdm(enumerate(test_data), total=len(test_data), ncols=120)
-            for index, (fmri_vol, image, image_id) in progress_bar: # enumerate: index와 값을 같이 반환
+            for index, (fmri_vol, image, _, image_id) in progress_bar: # enumerate: index와 값을 같이 반환
                 with torch.inference_mode():
                     #### forward inference ####
                     # noise 난수 고정
@@ -440,17 +446,21 @@ def low_train_inference_evaluate(args, train_data, test_data, models, optimizer,
                     image_enc_pred = voxel2sd(fmri_vol)
 
                     # forward(vae decoder) 
-                    best_img = autoenc.decode(image_enc_pred.detach()/0.18215).sample
+                    best_img = vae.decode(image_enc_pred.detach()/0.18215).sample / 2 + 0.5
 
+                    # image를 실제로 저장하기 위해 dictionary에 담아둠
                     for i in range(len(image_id)):
-                        img_id = image_id[i] if isinstance(image_id, (list, tuple)) else image_id
+                        img_id = image_id[i] 
                         img = best_img[i]
-                        all_recons[img_id] = img
+                        save_recons[img_id] = img
 
-                        # 폴더 저장
-                        save_path = os.path.join(args.root_dir, args.code_dir, args.output_dir, "low_recons", f'coco2017_{img_id}.jpg')
-                        save_image(save_path)
-                                                                                 
+                    # metric을 위해 저장
+                    all_recons.append(best_img)       # 이미 CPU 상태
+                    all_targets.append(image.cpu())        # image를 GPU에서 내려야 함 (image는 아직 GPU)
+
+            all_recons = torch.cat(all_recons, dim=0)  # [N, 3, H, W]
+            all_targets = torch.cat(all_targets, dim=0)
+
             torch.cuda.empty_cache() # gpu 메모리 cache삭제
             gc.collect() # gpu 메모리 안 쓰는거 삭제
 
@@ -493,15 +503,24 @@ def low_train_inference_evaluate(args, train_data, test_data, models, optimizer,
             wandb.log({f"eval/epoch{epoch}_{k}": v for k, v in results.items()}, step=global_step)
 
 
-            # metric이 하나라도 0.8 이상이면 모델 저장
-            if any(score > 0.8 for score in results.values()):
-                save_path = os.path.join(args.root_dir, args.code_dir, args.output_dir, f"mindeye1_{epoch}.pt")
+            # AlexNet_2이 0.65 이상이면 모델 저장
+            current_score = results.get("AlexNet_2", 0.0)
+            if current_score > best_alexnet2_score and current_score > 7:
+                best_alexnet2_score = current_score  # 최대값 업데이트
+
+                save_path = os.path.join(args.root_dir, args.code_dir, args.output_dir, f"mindeye1_low_{epoch}.pt")
                 save_path = get_unique_path(save_path)
-                torch.save(diffusion_prior.state_dict(), save_path)
-                print(f"Final model saved to {save_path} (metric > 0.8)")
+                torch.save(voxel2sd.state_dict(), save_path)
+                print(f"Final model saved to {save_path} (metric > 0.65)")
+
+                # save_recons 저장
+                for img_id, img_tensor in save_recons.items():
+                    img_tensor = img_tensor.clamp(0, 1)  # 이미지 값이 [0,1] 범위로 제한되어야 함
+                    save_path = os.path.join(args.root_dir, args.code_dir, args.output_dir, "low_recons", f"{img_id}.jpg")  # 파일 경로 설정
+                    save_image(img_tensor, save_path)  # 이미지 저장
 
                 # 결과를 텍스트 파일로 저장
-                result_path = os.path.join(args.root_dir, args.code_dir, args.output_dir, f"mindeye1_metrics_{epoch}.txt")
+                result_path = os.path.join(args.root_dir, args.code_dir, args.output_dir, f"mindeye1_low_metrics_{epoch}.txt")
                 result_path = get_unique_path(result_path)
                 with open(result_path, "w") as f:
                     for name, score in results.items():
@@ -510,4 +529,3 @@ def low_train_inference_evaluate(args, train_data, test_data, models, optimizer,
             torch.cuda.empty_cache() # gpu 메모리 cache삭제
             gc.collect() # gpu 메모리 안 쓰는거 삭제
 
-            recon과 target 저장해야함

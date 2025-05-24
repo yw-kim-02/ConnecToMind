@@ -3,7 +3,7 @@ import numpy as np
 import nibabel as nib
 from tqdm import tqdm
 
-for subj_num in range(1, 9):  # sub-01 ~ sub-08
+for subj_num in range(1, 2):  # sub-01 ~ sub-08
     subj = f"sub-{subj_num:02d}"
     input_dir = f'/nas/research/03-Neural_decoding/3-bids/derivatives/b4_roi/{subj}'  # 원본 폴더
 
@@ -16,7 +16,7 @@ for subj_num in range(1, 9):  # sub-01 ~ sub-08
         # output 경로 구성: sub-01/ses-01/func/
         sess_id = f"ses-{sess:02d}"
         output_dir = os.path.join(
-            f'/nas/research/03-Neural_decoding/3-bids/derivatives/new_b4_roi_zscore/{subj}/{sess_id}/func'
+            f'/nas/research/03-Neural_decoding/3-bids/derivatives/b4_roi_new_zscore/{subj}/{sess_id}/func'
         )
         os.makedirs(output_dir, exist_ok=True)
 
@@ -34,8 +34,8 @@ for subj_num in range(1, 9):  # sub-01 ~ sub-08
         img = nib.load(input_path)
         data = img.get_fdata()
 
-        mean = np.mean(data, axis=-1, keepdims=True)
-        std = np.std(data, axis=-1, keepdims=True)
+        mean = np.mean(data, axis=(0,1,2), keepdims=True)
+        std = np.std(data, axis=(0,1,2), keepdims=True)
         std[std == 0] = 1e-8
         zscore_data = (data - mean) / std
 

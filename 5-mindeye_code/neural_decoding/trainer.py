@@ -187,7 +187,7 @@ def inference(args, data, models, model_path):
 
     diffusion_prior.eval()
     progress_bar = tqdm(enumerate(data), total=len(data), ncols=120)
-    for index, (fmri_vol, image) in progress_bar: # enumerate: index와 값을 같이 반환
+    for index, (fmri_vol, image, low_image, _) in progress_bar: # enumerate: index와 값을 같이 반환
         with torch.inference_mode():
             #### forward inference ####
             # noise 난수 고정
@@ -197,6 +197,7 @@ def inference(args, data, models, model_path):
             # data + gpu 올리기
             fmri_vol = fmri_vol.to(device)   # fMRI -> GPU
             image = image.to(device)         # Image -> GPU
+            low_image = low_image.to(device)  
 
             # forward(MLP backbone) 
             clip_voxels, clip_voxels_proj = diffusion_prior.voxel2clip(fmri_vol)
@@ -220,7 +221,7 @@ def inference(args, data, models, model_path):
                 num_inference_steps,
                 recons_per_sample, # mindeye에서는 16개
                 inference_batch_size=fmri_vol.shape[0], # batch 중에서 몇 개만 저장할지 -> inference batch와 같이 줄 것
-                img_lowlevel = None,
+                img_lowlevel = low_image,
                 guidance_scale = 3.5,
                 img2img_strength = .85,
                 plotting=False,

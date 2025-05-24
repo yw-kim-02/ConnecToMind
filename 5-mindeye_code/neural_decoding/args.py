@@ -15,12 +15,12 @@ def parse_args():
         help="Path to the BIDS fmri."
     )
     parser.add_argument(
-        "--fmri_detail_dir", type=str, default="new_b4_roi_zscore",
+        "--fmri_detail_dir", type=str, default="beta_huggingface",
         choices=["b4_roi_zscore"],
         help="Path to the BIDS fmri_detail."
     )
     parser.add_argument(
-        "--image_dir", type=str, default="4-image",
+        "--image_dir", type=str, default="4-image/beta",
         help="Path to the BIDS image."
     )
     parser.add_argument(
@@ -31,7 +31,7 @@ def parse_args():
         help="train, inference, evaluate 구분"
     )
     parser.add_argument(
-        "--batch_size", type=int, default=60,
+        "--batch_size", type=int, default=75,
         help="Batch size can be increased by 10x if only training v2c and not diffusion prior",
     )
     parser.add_argument(
@@ -49,6 +49,10 @@ def parse_args():
     parser.add_argument(
         "--is_shuffle",type=argparse.BooleanOptionalAction,default=False,
         help="is shuffle",
+    )
+    parser.add_argument(
+        "--use_low_image",action=argparse.BooleanOptionalAction,default=True,
+        help="embedding 사용 유무",
     )
     parser.add_argument(
         "--world_size",type=int,default=1,
