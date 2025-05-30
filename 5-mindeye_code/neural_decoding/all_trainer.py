@@ -15,7 +15,7 @@ from torch.profiler import profile, record_function, ProfilerActivity
 import torch.nn.functional as F
 from torchvision.utils import save_image
 
-from utils import img_augment_high, img_augment_low, mixup, mixco_nce_loss, cosine_anneal, soft_clip_loss, topk, batchwise_cosine_similarity, log_gradient_norms, check_nan_and_log, reconstruction, plot_best_vs_gt_images, get_unique_path, soft_cont_loss
+from utils import img_augment_high, img_augment_low, mixup, mixco_nce_loss, cosine_anneal, soft_clip_loss, topk, batchwise_cosine_similarity, log_gradient_norms, check_nan_and_log, reconstruction, plot_best_vs_gt_images, save_gt_vs_recon_images, get_unique_path, soft_cont_loss
 
 def high_train_inference_evaluate(args, train_data, test_data, models, optimizer, lr_scheduler, metrics):
     
@@ -171,23 +171,18 @@ def high_train_inference_evaluate(args, train_data, test_data, models, optimizer
 
         torch.cuda.empty_cache() # gpu 메모리 cache삭제
         gc.collect() # # gpu 메모리 안 쓰는거 삭제
-        
-        if epoch == 240:
-            save_path = os.path.join(args.root_dir, args.code_dir, args.output_dir, f"mindeye1_{epoch}.pt")
-            save_path = get_unique_path(save_path)
-            torch.save(diffusion_prior.state_dict(), save_path)
 
-            torch.cuda.empty_cache() # gpu 메모리 cache삭제
-            gc.collect() # gpu 메모리 안 쓰는거 삭제
+        if epoch > 200 and epoch % 10 == 0:
 
-        if epoch > 240 and epoch % 3 == 0:
             #### inference ####
             all_recons = []
             all_targets = []
+            save_recons = {}
+            best_clip_score = 0.0  
 
             diffusion_prior.eval()
             progress_bar = tqdm(enumerate(test_data), total=len(test_data), ncols=120)
-            for index, (fmri_vol, image, low_image, _) in progress_bar: # enumerate: index와 값을 같이 반환
+            for index, (fmri_vol, image, low_image, image_id) in progress_bar: # enumerate: index와 값을 같이 반환
                 with torch.inference_mode():
                     # noise 난수 고정
                     generator = torch.Generator(device=device)
@@ -227,6 +222,14 @@ def high_train_inference_evaluate(args, train_data, test_data, models, optimizer
                         plotting=False,
                     )
 
+                    # image를 실제로 저장하기 위해 dictionary에 담아둠
+                    image = image.cpu()
+                    for i in range(len(image_id)):
+                        img_id = image_id[i] 
+                        recon_img = best_img[i]
+                        gt_img = image[i]
+                        save_recons[img_id] = (recon_img, gt_img)
+
                     # metric을 위해 저장
                     all_recons.append(best_img)       # 이미 CPU 상태
                     all_targets.append(image.cpu())        # image를 GPU에서 내려야 함 (image는 아직 GPU)
@@ -244,13 +247,7 @@ def high_train_inference_evaluate(args, train_data, test_data, models, optimizer
             results["PixCorr"] = metrics["pixcorr"](all_recons, all_targets)
             results["SSIM"] = metrics["ssim"](all_recons, all_targets)
 
-            # CLIP / AlexNet / Inception 
-            results["CLIP"] = metrics["clip"]["metric_fn"](
-                args, all_recons, all_targets,
-                metrics["clip"]["model"],
-                metrics["clip"]["preprocess"]
-            )
-
+            # AlexNet
             results["AlexNet_2"] = metrics["alexnet2"]["metric_fn"](
                 args, all_recons, all_targets,
                 metrics["alexnet2"]["model"],
@@ -265,10 +262,29 @@ def high_train_inference_evaluate(args, train_data, test_data, models, optimizer
                 metrics["alexnet5"]["layer"]
             )
 
+            # CLIP / Inception / EfficientNet / SwAV
+            results["CLIP"] = metrics["clip"]["metric_fn"](
+                args, all_recons, all_targets,
+                metrics["clip"]["model"],
+                metrics["clip"]["preprocess"]
+            )
+
             results["Inception"] = metrics["inception"]["metric_fn"](
                 args, all_recons, all_targets,
                 metrics["inception"]["model"],
                 metrics["inception"]["preprocess"]
+            )
+
+            results["EfficientNet_B1"] = metrics["efficientnet"]["metric_fn"](
+                args, all_recons, all_targets,
+                metrics["efficientnet"]["model"],
+                metrics["efficientnet"]["preprocess"]
+            )
+
+            results["SwAV"] = metrics["swav"]["metric_fn"](
+                args, all_recons, all_targets,
+                metrics["swav"]["model"],
+                metrics["swav"]["preprocess"]
             )
             
             for name, score in results.items():
@@ -276,12 +292,20 @@ def high_train_inference_evaluate(args, train_data, test_data, models, optimizer
             wandb.log({f"eval/epoch{epoch}_{k}": v for k, v in results.items()}, step=global_step)
 
 
-            # metric이 하나라도 0.8 이상이면 모델 저장
-            if any(score > 0.8 for score in results.values()):
+
+            # CLIP_2이 0.9 이상이면 모델 저장
+            current_score = results.get("CLIP", 0.0)
+            if current_score > best_clip_score and current_score > 0.9:
+                best_clip_score = current_score  # 최대값 업데이트
+
                 save_path = os.path.join(args.root_dir, args.code_dir, args.output_dir, f"mindeye1_{epoch}.pt")
                 save_path = get_unique_path(save_path)
                 torch.save(diffusion_prior.state_dict(), save_path)
-                print(f"Final model saved to {save_path} (metric > 0.8)")
+                print(f"Final model saved to {save_path} (metric > 0.9)")
+
+                # save_recons 저장
+                recons_dir = os.path.join(args.root_dir, args.code_dir, args.output_dir, "recons")
+                save_gt_vs_recon_images(save_recons, recons_dir)
 
                 # 결과를 텍스트 파일로 저장
                 result_path = os.path.join(args.root_dir, args.code_dir, args.output_dir, f"mindeye1_metrics_{epoch}.txt")
@@ -292,18 +316,14 @@ def high_train_inference_evaluate(args, train_data, test_data, models, optimizer
 
             torch.cuda.empty_cache() # gpu 메모리 cache삭제
             gc.collect() # gpu 메모리 안 쓰는거 삭제
-
+            
 def low_train_inference_evaluate(args, train_data, test_data, models, optimizer, lr_scheduler, metrics):
 
     # train argument
     device = args.device
-    num_epochs = args.num_epochs
-    mixup_pct = args.mixup_pct
 
     # test argument
     seed = args.seed
-    recons_per_sample = args.recons_per_sample
-    num_inference_steps = args.num_inference_steps
 
     scaler = GradScaler() # autocast scaler 인스턴스 생성
 
@@ -420,11 +440,12 @@ def low_train_inference_evaluate(args, train_data, test_data, models, optimizer,
         gc.collect() # # gpu 메모리 안 쓰는거 삭제
 
 
-        if epoch > 120 and epoch % 3 == 0:
+        if epoch >= 50 and epoch % 10 == 0:
             #### inference ####
             all_recons = []
             all_targets = []
             save_recons = {}
+            save_gts = {}
             best_alexnet2_score = 0.0  
 
             voxel2sd.eval()
@@ -451,8 +472,9 @@ def low_train_inference_evaluate(args, train_data, test_data, models, optimizer,
                     # image를 실제로 저장하기 위해 dictionary에 담아둠
                     for i in range(len(image_id)):
                         img_id = image_id[i] 
-                        img = best_img[i]
-                        save_recons[img_id] = img
+                        recon_img = best_img[i]
+                        save_recons[img_id] = recon_img
+
 
                     # metric을 위해 저장
                     all_recons.append(best_img)       # 이미 CPU 상태
@@ -500,23 +522,23 @@ def low_train_inference_evaluate(args, train_data, test_data, models, optimizer,
             
             for name, score in results.items():
                 print(f"{name:12}: {score:.4f}")
-            wandb.log({f"eval/epoch{epoch}_{k}": v for k, v in results.items()}, step=global_step)
+            # wandb.log({f"eval/epoch{epoch}_{k}": v for k, v in results.items()}, step=global_step)
 
 
             # AlexNet_2이 0.65 이상이면 모델 저장
-            current_score = results.get("AlexNet_2", 0.0)
-            if current_score > best_alexnet2_score and current_score > 7:
+            current_score = results.get("CLIP", 0.0)
+            if current_score > best_alexnet2_score and current_score > 0.7:
                 best_alexnet2_score = current_score  # 최대값 업데이트
 
                 save_path = os.path.join(args.root_dir, args.code_dir, args.output_dir, f"mindeye1_low_{epoch}.pt")
                 save_path = get_unique_path(save_path)
                 torch.save(voxel2sd.state_dict(), save_path)
-                print(f"Final model saved to {save_path} (metric > 0.65)")
+                print(f"Final model saved to {save_path} (metric > 0.7)")
 
                 # save_recons 저장
                 for img_id, img_tensor in save_recons.items():
                     img_tensor = img_tensor.clamp(0, 1)  # 이미지 값이 [0,1] 범위로 제한되어야 함
-                    save_path = os.path.join(args.root_dir, args.code_dir, args.output_dir, "low_recons", f"{img_id}.jpg")  # 파일 경로 설정
+                    save_path = os.path.join(args.root_dir, args.code_dir, args.output_dir, "low_recons", f"{img_id}")  # 파일 경로 설정
                     save_image(img_tensor, save_path)  # 이미지 저장
 
                 # 결과를 텍스트 파일로 저장

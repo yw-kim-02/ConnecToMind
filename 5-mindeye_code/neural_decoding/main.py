@@ -6,6 +6,7 @@ import torch
 import torch.multiprocessing as mp
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
+from torchvision.utils import save_image
 import wandb
 
 from args import parse_args
@@ -16,7 +17,7 @@ from schedulers import get_scheduler
 from metrics import get_metric
 from trainer import train, inference, evaluate
 from all_trainer import high_train_inference_evaluate, low_train_inference_evaluate
-from utils import seed_everything, get_unique_path
+from utils import seed_everything, get_unique_path, save_gt_vs_recon_images
 
 def main():
     # parse_args 정의
@@ -83,9 +84,9 @@ def main():
         try:
             _ = output_path.shape
         except:
-            output_path = os.path.join(args.root_dir, args.code_dir, args.output_dir, 'mindeye1_1.pt') # mindeye1.pt이 
+            output_path = os.path.join(args.root_dir, args.code_dir, args.output_dir, 'mindeye1_240.pt') # mindeye1.pt이 
         
-        all_recons, all_targets = inference(args, test_data, model_bundle, output_path)
+        all_recons, all_targets, save_recons = inference(args, test_data, model_bundle, output_path)
 
         # inference 저장
         cache_path = os.path.join(args.root_dir, args.code_dir, args.output_dir, args.recon_name + ".pt")  # 저장 경로 설정
@@ -106,11 +107,6 @@ def main():
         metric_bundle = {
             "pixcorr": metrics["pixcorr"],
             "ssim": metrics["ssim"],
-            "clip": {
-                "model": metrics["clip"]["model"].to(args.device),
-                "preprocess": metrics["clip"]["preprocess"],
-                "metric_fn": metrics["clip"]["metric_fn"],
-            },
             "alexnet2": {
                 "model": metrics["alexnet2"]["model"].to(args.device),
                 "preprocess": metrics["alexnet2"]["preprocess"],
@@ -123,10 +119,25 @@ def main():
                 "layer": metrics["alexnet5"]["layer"],
                 "metric_fn": metrics["alexnet5"]["metric_fn"],
             },
+            "clip": {
+                "model": metrics["clip"]["model"].to(args.device),
+                "preprocess": metrics["clip"]["preprocess"],
+                "metric_fn": metrics["clip"]["metric_fn"],
+            },
             "inception": {
                 "model": metrics["inception"]["model"].to(args.device),
                 "preprocess": metrics["inception"]["preprocess"],
                 "metric_fn": metrics["inception"]["metric_fn"],
+            },
+            "efficientnet": {
+                "model": metrics["efficientnet"]["model"].to(args.device),
+                "preprocess": metrics["efficientnet"]["preprocess"],
+                "metric_fn": metrics["efficientnet"]["metric_fn"],
+            },
+            "swav": {
+                "model": metrics["swav"]["model"].to(args.device),
+                "preprocess": metrics["swav"]["preprocess"],
+                "metric_fn": metrics["swav"]["metric_fn"],
             },
         }
 
@@ -146,6 +157,10 @@ def main():
         with open(txt_path, "w") as f:
             for name, score in metric_results.items():
                 f.write(f"{name}: {score:.4f}\n")
+
+        # save_recons 저장
+        recons_dir = os.path.join(args.root_dir, args.code_dir, args.output_dir, "recons")
+        save_gt_vs_recon_images(save_recons, recons_dir)
 
 def main_high_all():
     args = parse_args()
@@ -179,11 +194,6 @@ def main_high_all():
     metric_bundle = {
         "pixcorr": metrics["pixcorr"],
         "ssim": metrics["ssim"],
-        "clip": {
-            "model": metrics["clip"]["model"].to(args.device),
-            "preprocess": metrics["clip"]["preprocess"],
-            "metric_fn": metrics["clip"]["metric_fn"],
-        },
         "alexnet2": {
             "model": metrics["alexnet2"]["model"].to(args.device),
             "preprocess": metrics["alexnet2"]["preprocess"],
@@ -196,10 +206,25 @@ def main_high_all():
             "layer": metrics["alexnet5"]["layer"],
             "metric_fn": metrics["alexnet5"]["metric_fn"],
         },
+        "clip": {
+            "model": metrics["clip"]["model"].to(args.device),
+            "preprocess": metrics["clip"]["preprocess"],
+            "metric_fn": metrics["clip"]["metric_fn"],
+        },
         "inception": {
             "model": metrics["inception"]["model"].to(args.device),
             "preprocess": metrics["inception"]["preprocess"],
             "metric_fn": metrics["inception"]["metric_fn"],
+        },
+        "efficientnet": {
+            "model": metrics["efficientnet"]["model"].to(args.device),
+            "preprocess": metrics["efficientnet"]["preprocess"],
+            "metric_fn": metrics["efficientnet"]["metric_fn"],
+        },
+        "swav": {
+            "model": metrics["swav"]["model"].to(args.device),
+            "preprocess": metrics["swav"]["preprocess"],
+            "metric_fn": metrics["swav"]["metric_fn"],
         },
     }
 
@@ -240,11 +265,6 @@ def main_low_all():
     metric_bundle = {
         "pixcorr": metrics["pixcorr"],
         "ssim": metrics["ssim"],
-        "clip": {
-            "model": metrics["clip"]["model"].to(args.device),
-            "preprocess": metrics["clip"]["preprocess"],
-            "metric_fn": metrics["clip"]["metric_fn"],
-        },
         "alexnet2": {
             "model": metrics["alexnet2"]["model"].to(args.device),
             "preprocess": metrics["alexnet2"]["preprocess"],
@@ -257,10 +277,25 @@ def main_low_all():
             "layer": metrics["alexnet5"]["layer"],
             "metric_fn": metrics["alexnet5"]["metric_fn"],
         },
+        "clip": {
+            "model": metrics["clip"]["model"].to(args.device),
+            "preprocess": metrics["clip"]["preprocess"],
+            "metric_fn": metrics["clip"]["metric_fn"],
+        },
         "inception": {
             "model": metrics["inception"]["model"].to(args.device),
             "preprocess": metrics["inception"]["preprocess"],
             "metric_fn": metrics["inception"]["metric_fn"],
+        },
+        "efficientnet": {
+            "model": metrics["efficientnet"]["model"].to(args.device),
+            "preprocess": metrics["efficientnet"]["preprocess"],
+            "metric_fn": metrics["efficientnet"]["metric_fn"],
+        },
+        "swav": {
+            "model": metrics["swav"]["model"].to(args.device),
+            "preprocess": metrics["swav"]["preprocess"],
+            "metric_fn": metrics["swav"]["metric_fn"],
         },
     }
 
@@ -272,6 +307,6 @@ def main_low_all():
     low_train_inference_evaluate(args, train_data, test_data, model_bundle, optimizer, lr_scheduler, metric_bundle)
 
 if __name__ == "__main__":
-    # main()
+    main()
     # main_high_all()
-    main_low_all()
+    # main_low_all()

@@ -168,12 +168,14 @@ class hug_TestDataset(Dataset): # ses단위로 실행
 
         # 이미지 로딩
         image_path = os.path.join(self.image_path, self.cocoid[idx])
+        low_image_path = os.path.join(self.low_image_path, self.cocoid[idx])
+
         image = Image.open(image_path).convert('RGB')
         if self.transform:
             image = self.transform(image)
 
         if self.use_low_image:
-            low_image = Image.open(self.low_image_path).convert('RGB')
+            low_image = Image.open(low_image_path).convert('RGB')
             if self.transform:
                 low_image = self.transform(low_image)
         else:

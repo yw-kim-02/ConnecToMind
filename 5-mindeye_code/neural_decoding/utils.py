@@ -405,6 +405,40 @@ def plot_best_vs_gt_images(best_imgs, gt_imgs, index, save_dir="outputs", max_im
     fig.savefig(save_path, bbox_inches="tight", dpi=150)
     plt.close(fig)
 
+def save_gt_vs_recon_images(save_recons, save_dir):
+    """
+    GT와 Recon 이미지를 나란히 저장하는 함수
+
+    Args:
+        save_recons (dict): {img_id: (recon_img, gt_img)} 형태의 dict
+        save_dir (str): 저장할 디렉토리
+    """
+    def tensor_to_image(tensor):
+        tensor = tensor.detach().cpu().clamp(0, 1)
+        return tensor.permute(1, 2, 0).numpy()
+
+    os.makedirs(save_dir, exist_ok=True)
+
+    for img_id, (recon_img, gt_img) in save_recons.items():
+        # 시각화
+        fig, axes = plt.subplots(1, 2, figsize=(6, 3))
+        axes[0].imshow(tensor_to_image(gt_img))
+        axes[0].set_title("Ground Truth")
+        axes[0].axis("off")
+
+        axes[1].imshow(tensor_to_image(recon_img))
+        axes[1].set_title("Reconstruction")
+        axes[1].axis("off")
+
+        plt.tight_layout()
+
+        # 저장
+        save_path = os.path.join(save_dir, f"{img_id}")
+        fig.savefig(save_path, bbox_inches="tight", dpi=150)
+        plt.close(fig)
+
+    print(f"[완료] {len(save_recons)}개 이미지 저장 완료: {save_dir}")
+
 def soft_cont_loss(student_preds, teacher_preds, teacher_aug_preds, temp=0.125, distributed=False):
     
     if not distributed:

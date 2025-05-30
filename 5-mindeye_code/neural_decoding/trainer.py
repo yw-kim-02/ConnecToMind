@@ -13,7 +13,7 @@ from torch.cuda.amp import autocast, GradScaler
 from torch.utils.data.distributed import DistributedSampler
 from torch.profiler import profile, record_function, ProfilerActivity
 
-from utils import img_augment_high, mixup, mixco_nce_loss, cosine_anneal, soft_clip_loss, topk, batchwise_cosine_similarity, log_gradient_norms, check_nan_and_log, reconstruction, plot_best_vs_gt_images
+from utils import img_augment_high, mixup, mixco_nce_loss, cosine_anneal, soft_clip_loss, topk, batchwise_cosine_similarity, log_gradient_norms, check_nan_and_log, reconstruction
 
 def train(args, data, models, optimizer, lr_scheduler):
 
@@ -184,10 +184,11 @@ def inference(args, data, models, model_path):
     # for metric 
     all_recons = []
     all_targets = []
+    save_recons = {}
 
     diffusion_prior.eval()
     progress_bar = tqdm(enumerate(data), total=len(data), ncols=120)
-    for index, (fmri_vol, image, low_image, _) in progress_bar: # enumerate: index와 값을 같이 반환
+    for index, (fmri_vol, image, low_image, image_id) in progress_bar: # enumerate: index와 값을 같이 반환
         with torch.inference_mode():
             #### forward inference ####
             # noise 난수 고정
@@ -227,26 +228,22 @@ def inference(args, data, models, model_path):
                 plotting=False,
             )
 
+            # image를 실제로 저장하기 위해 dictionary에 담아둠
+            image = image.cpu()
+            for i in range(len(image_id)):
+                img_id = image_id[i] 
+                recon_img = best_img[i]
+                gt_img = image[i]
+                save_recons[img_id] = (recon_img, gt_img)
+
             # metric을 위해 저장
             all_recons.append(best_img)       # 이미 CPU 상태
             all_targets.append(image.cpu())        # image를 GPU에서 내려야 함 (image는 아직 GPU)
 
-            # 생성 image 저장
-            best_imgs = [img for img in all_recons[-1]]
-            gt_imgs = [img for img in all_targets[-1]]
-            
-            plot_best_vs_gt_images(
-                best_imgs,
-                gt_imgs,
-                index=index,
-                save_dir=os.path.join(args.root_dir, args.code_dir, args.output_dir, "recons"),
-                max_imgs=10
-            )
-
     all_recons = torch.cat(all_recons, dim=0)  # [N, 3, H, W]
     all_targets = torch.cat(all_targets, dim=0)
 
-    return all_recons, all_targets
+    return all_recons, all_targets, save_recons
 
 def evaluate(args, all_recons, all_targets, metrics):
 
@@ -258,12 +255,6 @@ def evaluate(args, all_recons, all_targets, metrics):
     results["SSIM"] = metrics["ssim"](all_recons, all_targets)
 
     # CLIP / AlexNet / Inception 
-    results["CLIP"] = metrics["clip"]["metric_fn"](
-        args, all_recons, all_targets,
-        metrics["clip"]["model"],
-        metrics["clip"]["preprocess"]
-    )
-
     results["AlexNet_2"] = metrics["alexnet2"]["metric_fn"](
         args, all_recons, all_targets,
         metrics["alexnet2"]["model"],
@@ -277,11 +268,29 @@ def evaluate(args, all_recons, all_targets, metrics):
         metrics["alexnet5"]["preprocess"],
         metrics["alexnet5"]["layer"]
     )
+    
+    results["CLIP"] = metrics["clip"]["metric_fn"](
+        args, all_recons, all_targets,
+        metrics["clip"]["model"],
+        metrics["clip"]["preprocess"]
+    )
 
     results["Inception"] = metrics["inception"]["metric_fn"](
         args, all_recons, all_targets,
         metrics["inception"]["model"],
         metrics["inception"]["preprocess"]
+    )
+
+    results["EfficientNet_B1"] = metrics["efficientnet"]["metric_fn"](
+        args, all_recons, all_targets,
+        metrics["efficientnet"]["model"],
+        metrics["efficientnet"]["preprocess"]
+    )
+
+    results["SwAV"] = metrics["swav"]["metric_fn"](
+        args, all_recons, all_targets,
+        metrics["swav"]["model"],
+        metrics["swav"]["preprocess"]
     )
     
     for name, score in results.items():

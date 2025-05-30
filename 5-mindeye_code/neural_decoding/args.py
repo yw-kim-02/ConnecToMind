@@ -27,11 +27,11 @@ def parse_args():
         "--seed",type=int,default=42,
     )
     parser.add_argument(
-        '--mode', type=str, choices=['train', 'inference', 'evaluate'], default='train',
+        '--mode', type=str, choices=['train', 'inference', 'evaluate'], default='inference',
         help="train, inference, evaluate 구분"
     )
     parser.add_argument(
-        "--batch_size", type=int, default=75,
+        "--batch_size", type=int, default=80,
         help="Batch size can be increased by 10x if only training v2c and not diffusion prior",
     )
     parser.add_argument(

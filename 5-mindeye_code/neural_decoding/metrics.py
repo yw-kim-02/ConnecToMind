@@ -6,9 +6,10 @@ from skimage.metrics import structural_similarity
 
 import clip
 from torchvision.transforms.functional import to_pil_image
-from torchvision.models import alexnet, inception_v3
+from torchvision.models import alexnet, inception_v3, efficientnet_b1
 from torchvision.models.feature_extraction import create_feature_extractor
-from torchvision.models import AlexNet_Weights, Inception_V3_Weights
+from torchvision.models import AlexNet_Weights, Inception_V3_Weights, EfficientNet_B1_Weights
+import scipy as sp
 
 
 # PixCorr
@@ -45,6 +46,24 @@ def alexnet_5(args, recons, gts, alex_model, preprocess, layer='features.11'):
 # Inception
 def inception(args, recons, gts, incep_model, preprocess):
     return two_way_identification(args, recons, gts, incep_model, preprocess, 'avgpool')
+
+# EfficientNet
+def efficientnet(args, recons, gts, model, preprocess):
+    with torch.no_grad():
+        gt = model(torch.stack([preprocess(g) for g in gts]).to(args.device))['avgpool']
+        gt = gt.reshape(len(gt), -1).cpu().numpy()
+        fake = model(torch.stack([preprocess(r) for r in recons]).to(args.device))['avgpool']
+        fake = fake.reshape(len(fake), -1).cpu().numpy()
+        return np.array([sp.spatial.distance.correlation(gt[i], fake[i]) for i in range(len(gt))]).mean()
+
+# SwAV 
+def swav_metric(args, recons, gts, model, preprocess):
+    with torch.no_grad():
+        gt = model(torch.stack([preprocess(g) for g in gts]).to(args.device))['avgpool']
+        gt = gt.reshape(len(gt), -1).cpu().numpy()
+        fake = model(torch.stack([preprocess(r) for r in recons]).to(args.device))['avgpool']
+        fake = fake.reshape(len(fake), -1).cpu().numpy()
+        return np.array([sp.spatial.distance.correlation(gt[i], fake[i]) for i in range(len(gt))]).mean()
 
 # 2-way Identification (used for CLIP, AlexNet, Inception)
 @torch.no_grad()
@@ -85,9 +104,6 @@ def process_image(tensor_img, preprocess):
 
 def get_metric(args):
     device = args.device
-    # CLIP
-    clip_model, clip_preprocess = clip.load("ViT-L/14", device=device)
-    clip_model.eval().requires_grad_(False)
 
     # AlexNet
     alex = alexnet(weights=AlexNet_Weights.IMAGENET1K_V1).to(device).eval()
@@ -101,6 +117,10 @@ def get_metric(args):
                              std=[0.229, 0.224, 0.225])
     ])
 
+    # CLIP
+    clip_model, clip_preprocess = clip.load("ViT-L/14", device=device)
+    clip_model.eval().requires_grad_(False)
+
     # Inception
     incep = inception_v3(weights=Inception_V3_Weights.DEFAULT).to(device).eval()
     incep_extractor = create_feature_extractor(incep, return_nodes={"avgpool": "avgpool"})
@@ -110,15 +130,28 @@ def get_metric(args):
                              std=[0.229, 0.224, 0.225])
     ])
 
+    # EfficientNet-B1
+    eff = efficientnet_b1(weights=EfficientNet_B1_Weights.DEFAULT).to(device).eval()
+    eff_extractor = create_feature_extractor(eff, return_nodes={"avgpool": "avgpool"})
+    eff_preprocess = transforms.Compose([
+        transforms.Resize(255, interpolation=transforms.InterpolationMode.BILINEAR),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                             std=[0.229, 0.224, 0.225]),
+    ])
+
+    # SwAV
+    swav = torch.hub.load('facebookresearch/swav:main', 'resnet50').to(device).eval()
+    swav_extractor = create_feature_extractor(swav, return_nodes={"avgpool": "avgpool"})
+    swav_preprocess = transforms.Compose([
+        transforms.Resize(224, interpolation=transforms.InterpolationMode.BILINEAR),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                             std=[0.229, 0.224, 0.225]),
+    ])
+
     # 마지막에 딕셔너리로 모두 묶기
     metrics = {
         "pixcorr": pixcorr,
         "ssim": ssim,
-        "clip": {
-            "model": clip_model,
-            "preprocess": clip_preprocess,
-            "metric_fn": clip_metric,
-        },
         "alexnet2": {
             "model": alex_extractor,
             "preprocess": alex_preprocess,
@@ -131,10 +164,25 @@ def get_metric(args):
             "layer": "features.11",
             "metric_fn": alexnet_5,
         },
+        "clip": {
+            "model": clip_model,
+            "preprocess": clip_preprocess,
+            "metric_fn": clip_metric,
+        },
         "inception": {
             "model": incep_extractor,
             "preprocess": incep_preprocess,
             "metric_fn": inception,
+        },
+        "efficientnet": {
+            "model": eff_extractor,
+            "preprocess": eff_preprocess,
+            "metric_fn": efficientnet,
+        },
+        "swav": {
+            "model": swav_extractor,
+            "preprocess": swav_preprocess,
+            "metric_fn": swav_metric,
         },
     }
 
