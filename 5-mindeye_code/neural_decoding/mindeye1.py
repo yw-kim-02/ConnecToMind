@@ -3,9 +3,13 @@ import numpy as np
 from torchvision import transforms
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+import torch.nn.init as init
 import PIL
 from functools import partial
 import glob
+from scipy.stats import pearsonr
+
 
 # for clip
 import clip # OpenAI CLIP (RN50, ViT-L/14 등)
@@ -121,7 +125,160 @@ class Clipper(torch.nn.Module):
         embeds = self.image_encoder.visual_projection(embeds)
         return embeds 
     
+class BrainTransformerNetwork(nn.Module):
+    def __init__(self, input_dim=2056, embed_dim=768, output_dim=257, seq_len=20, nhead=8, num_layers=8, is_position=False, is_cosine=False):
+        super().__init__()
+
+        # self.linear1 = nn.Sequential(
+        #     nn.Linear(input_dim, embed_dim),
+        #     nn.BatchNorm1d(embed_dim),
+        #     nn.ReLU(),
+        #     nn.Dropout(0.5)
+        # )
+        self.embed_dim = embed_dim
+        self.seq_len = seq_len
+        self.is_position = is_position
+
+        # roi별로 다른 weight의 linear layer (seq_len x input_dim x embed_dim) -> einsum 사용
+        self.linear1_weight = nn.Parameter(torch.empty(seq_len, input_dim, embed_dim))
+        for t in range(seq_len):
+            init.xavier_uniform_(self.linear1_weight[t]) # xavier_uniform 초기화
+        self.layernorm1 = nn.LayerNorm(embed_dim)
+        self.gelu = nn.GELU()
+        self.dropout1 = nn.Dropout(0.5)
+
+        # positional embedding
+        self.pos_embedding = nn.Parameter(torch.randn(1, seq_len, embed_dim))
+
+        if is_cosine:
+            encoder_layer = CustomTransformerEncoderLayer(d_model=embed_dim, nhead=nhead)
+        else:
+            encoder_layer = nn.TransformerEncoderLayer(d_model=embed_dim, nhead=nhead, batch_first=True)
+        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.linear2 = nn.Linear(seq_len, output_dim, bias=True)
+            
+        self.projector = nn.Sequential(
+            nn.LayerNorm(embed_dim),
+            nn.GELU(),
+            nn.Linear(embed_dim, 2048),
+            nn.LayerNorm(2048),
+            nn.GELU(),
+            nn.Linear(2048, 2048),
+            nn.LayerNorm(2048),
+            nn.GELU(),
+            nn.Linear(2048, embed_dim)
+        )
+
+    def forward(self, x):
+        '''
+        x(FuncSpatial Backbone): fmri -> tr - shape: [batch, (257*768)]
+        x(FuncSpatial projector): fmri -> tr -> mlp - shape: ([batch, 768], [batch, 257, 768])
+        '''
+        # 각 roi마다 linear layer
+        # x = self.linear1(x)  # [B, 20, 768]
+        x = torch.einsum("btd,tdh->bth", x, self.linear1_weight) # [B, 20, 768]
+        x = self.layernorm1(x)
+        x = self.gelu(x)
+        x = self.dropout1(x)
+
+        # positional embedding
+        if self.is_position:
+            x = x + self.pos_embedding
+
+        x = self.transformer_encoder(x)  # [B, 20, 768]
+        x = x.permute(0, 2, 1)  # [B, 768, 20]
+
+        x = self.linear2(x)  # [B, 768, 257]
+        x = x.permute(0, 2, 1)  # [B, 257, 768]
+
+        # MLP backborn, MLP projection(contrastive learning)
+        return x, self.projector(x.reshape(len(x), -1, self.embed_dim))
     
+class CustomTransformerEncoderLayer(nn.Module):
+    def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1):
+        super().__init__()
+        self.self_attn = CustomMultiheadAttention(d_model, nhead, dropout=dropout)
+
+        # Feedforward network
+        self.linear1 = nn.Linear(d_model, dim_feedforward)
+        self.dropout = nn.Dropout(dropout)
+        self.linear2 = nn.Linear(dim_feedforward, d_model)
+
+        # Normalization and dropout
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.dropout1 = nn.Dropout(dropout)
+        self.dropout2 = nn.Dropout(dropout)
+
+        # Activation function
+        self.activation = F.relu 
+
+    def forward(self, x, src_mask=None, is_causal=False, src_key_padding_mask=None):
+        # Self-attention block
+        residual = x
+        x = self.self_attn(x)
+        x = residual + self.dropout1(x)
+        x = self.norm1(x)
+
+        # Feedforward block
+        residual = x
+        x = self.linear2(self.dropout(self.activation(self.linear1(x))))
+        x = residual + self.dropout2(x)
+        x = self.norm2(x)
+
+        return x
+
+class CustomMultiheadAttention(nn.Module):
+    def __init__(self, embed_dim, num_heads, dropout=0.1, bias=True):
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.head_dim = embed_dim // num_heads
+
+        self.qkv_proj = nn.Linear(embed_dim, 3 * embed_dim, bias=bias)
+        self.out_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x):
+        B, T, E = x.shape
+        
+        # q, k, v 한 번에 계산하고 쪼갬
+        qkv = self.qkv_proj(x)  # (B, T, 3E)
+        q, k, v = qkv.chunk(3, dim=-1)
+
+        q = q.view(B, T, self.num_heads, self.head_dim).transpose(1, 2)
+        k = k.view(B, T, self.num_heads, self.head_dim).transpose(1, 2)
+        v = v.view(B, T, self.num_heads, self.head_dim).transpose(1, 2)
+
+        attn_scores = torch.matmul(q, k.transpose(-2, -1)) / (self.head_dim ** 0.5)
+        
+        # cosine simility 사전정보 주입
+        cosine_bias = self.cosine_similarity_matrix(x)
+        print(f"[DEBUG] cosine_bias shape: {cosine_bias.shape}")
+        print(f"[DEBUG] cosine_bias min: {cosine_bias.min().item():.4f}, max: {cosine_bias.max().item():.4f}")
+        cosine_bias = cosine_bias.unsqueeze(1)  # (B, 1, T, T) for broadcasting
+        attn_scores = attn_scores + cosine_bias
+
+        print(f"[DEBUG] cosine_bias (unsqueezed) shape: {cosine_bias.shape}")
+        print(f"[DEBUG] attn_scores shape: {attn_scores.shape}")
+        print(f"[DEBUG] attn_scores min: {attn_scores.min().item():.4f}, max: {attn_scores.max().item():.4f}")
+
+        attn_weights = torch.softmax(attn_scores, dim=-1)
+        attn_weights = self.dropout(attn_weights)
+
+        attn_output = torch.matmul(attn_weights, v)  # (B, H, T, D)
+        attn_output = attn_output.transpose(1, 2).contiguous().view(B, T, E)
+
+        out = self.out_proj(attn_output)
+
+        return out
+    
+    def cosine_similarity_matrix(self, x):
+        x_norm = F.normalize(x, dim=2)  # 정규화: 각 벡터의 크기를 1로
+        sim_matrix = torch.matmul(x_norm, x_norm.transpose(1, 2))  # [N, N] pairwise cosine similarity
+        return sim_matrix
+    
+
 class BrainNetwork(nn.Module):
     def __init__(self, in_dim=15724, out_dim=257*768, clip_size=768, h=4096, n_blocks=4, norm_type='ln', act_first=False):
         super().__init__()
@@ -184,8 +341,9 @@ class BrainNetwork(nn.Module):
         x = x.reshape(len(x), -1)
         x = self.lin1(x)
 
-        # MLP backborn + MLP projection(contrastive learning)
+        # MLP backborn, MLP projection(contrastive learning)
         return x, self.projector(x.reshape(len(x), -1, self.clip_size))
+
         
 # BrainNetwork과 versatileDiffusionPriorNetwork가 인자로 들어감
 class BrainDiffusionPrior(DiffusionPrior):
@@ -937,3 +1095,84 @@ def get_model_highlevel(args):
 
     return models
 
+def get_model_highlevel_FuncSpatial(args):
+    
+    #### clip 정의 ####
+    clip_extractor = Clipper(clip_variant=args.clip_variant, norm_embs=args.norm_embs, hidden_state=args.hidden, device=args.device)
+    
+    #### brain network 정의 ####
+    out_dim = args.token_size * args.clip_size # 257 * 768
+    voxel2clip_kwargs = dict(input_dim=2056, embed_dim=768, output_dim=257, seq_len=20, nhead=8, num_layers=args.num_layers, is_cosine=args.is_cosine)
+    voxel2clip = BrainTransformerNetwork(**voxel2clip_kwargs)
+
+    #### difussion prior 정의 ####
+    out_dim = args.clip_size # 모델 거치면 257 * 768 나옴
+    depth = 6 # transformer의 layer 수 -> versatile의 한 step의 layer
+    dim_head = 64 # head당 dim
+    heads = args.clip_size//dim_head # attention head 수
+    timesteps = 100 # difusion step 수 
+    
+    prior_network = VersatileDiffusionPriorNetwork(
+        dim=out_dim,
+        depth=depth,
+        dim_head=dim_head,
+        heads=heads,
+        causal=False,
+        num_tokens = 257,
+        learned_query_mode="pos_emb"
+    ).to(args.device)
+
+    # VersatileDiffusionPriorNetwork + BrainNetwork가 인자로 들어감
+    diffusion_prior = BrainDiffusionPrior(
+        net=prior_network, # VersatileDiffusionPriorNetwork(필수 모델) -> nn.Module이라 학습 됨
+        image_embed_dim=out_dim,
+        condition_on_text_encodings=False,
+        timesteps=timesteps,
+        cond_drop_prob=0.2,
+        image_embed_scale=None,
+        voxel2clip=voxel2clip, # BrainNetwork(추가 모델) -> nn.Module이라 학습 됨
+    ).to(args.device)
+
+    #### versatile difussion 정의(unet, vae, noise scheduler) ####
+    try:
+        # vd_model_dir = os.path.join(args.cache_dir, "models--shi-labs--versatile-diffusion")
+        vd_model_dir = os.path.join(args.cache_dir, "models--shi-labs--versatile-diffusion", "snapshots")
+        snapshot_name = os.listdir(vd_model_dir)  # 첫 snapshot
+        snapshot_path = os.path.join(vd_model_dir, snapshot_name[0])
+        vd_pipe =  VersatileDiffusionDualGuidedPipeline.from_pretrained(vd_model_dir)
+    except: # 처음에는 모델 불러와야 함
+        vd_pipe =  VersatileDiffusionDualGuidedPipeline.from_pretrained("shi-labs/versatile-diffusion", cache_dir = args.cache_dir)
+    
+    # versatile difussion의 unet 정의
+    vd_pipe.image_unet.eval()
+    vd_pipe.image_unet.requires_grad_(False)
+    # DualTransformer2DModel 이름 추출에서 image부분만 사용한다고 명시
+    for name, module in vd_pipe.image_unet.named_modules(): # class vd_pipe.image_unet를 찍은 object들 
+        if isinstance(module, DualTransformer2DModel): # object들 중 DualTransformer2DModel 이름 추출
+            module.mix_ratio = 0.0 # versatile에서 image condition만 사용
+            # text contex를 사용하지 않더라도 shape는 맞춰야 함
+            for i, type in enumerate(("text", "image")):
+                if type == "text":
+                    module.condition_lengths[i] = 77
+                    module.transformer_index_for_condition[i] = 1  # use the second (text) transformer
+                else:
+                    module.condition_lengths[i] = 257
+                    module.transformer_index_for_condition[i] = 0  # use the first (image) transformer
+
+    # versatile difussion의 vae 정의 -> inference의 decoder로 사용
+    vd_pipe.vae.eval()
+    vd_pipe.vae.requires_grad_(False)
+
+    unet = vd_pipe.image_unet
+    vae = vd_pipe.vae
+    noise_scheduler = vd_pipe.scheduler
+
+    models = {
+        "clip": clip_extractor,
+        "diffusion_prior": diffusion_prior,
+        "unet": unet, # inference에서만 사용
+        "vae": vae, # inference에서만 사용
+        "noise_scheduler": noise_scheduler, # inference에서만 사용
+    }
+
+    return models

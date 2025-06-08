@@ -149,6 +149,8 @@ def high_train_inference_evaluate(args, train_data, test_data, models, optimizer
             logs = {
                 "train/num_steps": index + 1,
                 "train/lr": lrs[-1],
+                "train/global_step": global_step,
+                "train/epoch": epoch,
                 "train/loss": losses[-1],
                 "train/loss_nce": nce_loss,
                 "train/loss_prior": prior_loss,
@@ -172,7 +174,7 @@ def high_train_inference_evaluate(args, train_data, test_data, models, optimizer
         torch.cuda.empty_cache() # gpu 메모리 cache삭제
         gc.collect() # # gpu 메모리 안 쓰는거 삭제
 
-        if epoch > 200 and epoch % 10 == 0:
+        if epoch >= 240 and epoch % 4 == 0:
 
             #### inference ####
             all_recons = []

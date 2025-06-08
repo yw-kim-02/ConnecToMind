@@ -10,8 +10,8 @@ from torchvision.utils import save_image
 import wandb
 
 from args import parse_args
-from data import get_dataloader, sub1_train_dataset, sub1_train_dataset_hug
-from mindeye1 import get_model_highlevel, get_model_lowlevel
+from data import get_dataloader, sub1_train_dataset, sub1_train_dataset_hug, sub1_train_dataset_FuncSpatial
+from mindeye1 import get_model_highlevel, get_model_lowlevel, get_model_highlevel_FuncSpatial
 from optimizers import get_optimizer_highlevel, get_optimizer_lowlevel
 from schedulers import get_scheduler
 from metrics import get_metric
@@ -230,8 +230,7 @@ def main_high_all():
 
     # wandb 적용
     wandb.login() # login
-    wandb.init(project="neural_decoding_highlevel", name=f"run-{wandb.util.generate_id()}") # init
-    wandb.config = vars(args) # aparse_args()의 내용 그대로 config로 주기
+    wandb.init(project="neural_decoding_highlevel", name=f"run-{wandb.util.generate_id()}", config=vars(args)) # init
 
     high_train_inference_evaluate(args, train_data, test_data, model_bundle, optimizer, lr_scheduler, metric_bundle)
 
@@ -301,12 +300,85 @@ def main_low_all():
 
     # wandb 적용
     wandb.login() # login
-    wandb.init(project="neural_decoding_lowlevel", name=f"run-{wandb.util.generate_id()}") # init
-    wandb.config = vars(args) # aparse_args()의 내용 그대로 config로 주기
+    wandb.init(project="neural_decoding_lowlevel", name=f"run-{wandb.util.generate_id()}", config=vars(args)) # init
 
     low_train_inference_evaluate(args, train_data, test_data, model_bundle, optimizer, lr_scheduler, metric_bundle)
 
+def main_high_all_FuncSpatial():
+    args = parse_args()
+
+    # data loader
+    seed_everything(args.seed) # 시드 고정
+    train_data = get_dataloader(args)
+    setattr(args, 'mode', 'inference')
+    test_data = get_dataloader(args)
+
+    # model 정의
+    models = get_model_highlevel_FuncSpatial(args) 
+    model_bundle = {
+        "clip": models["clip"].to(args.device),
+        "diffusion_prior": models["diffusion_prior"].to(args.device),
+        "unet": models["unet"].to(args.device), # inference에서만 사용
+        "vae": models["vae"].to(args.device), # inference에서만 사용
+        "noise_scheduler": models["noise_scheduler"], # inference에서만 사용
+    }
+
+    # optimizer 정의
+    optimizer = get_optimizer_highlevel(args, model_bundle["diffusion_prior"])
+
+    # scheduler 정의(train만 함)
+    train_dataset = sub1_train_dataset_FuncSpatial(args)
+    num_train = len(train_dataset) 
+    lr_scheduler = get_scheduler(args, optimizer, num_train)
+
+    # metric 정의
+    metrics = get_metric(args)
+    metric_bundle = {
+        "pixcorr": metrics["pixcorr"],
+        "ssim": metrics["ssim"],
+        "alexnet2": {
+            "model": metrics["alexnet2"]["model"].to(args.device),
+            "preprocess": metrics["alexnet2"]["preprocess"],
+            "layer": metrics["alexnet2"]["layer"],
+            "metric_fn": metrics["alexnet2"]["metric_fn"],
+        },
+        "alexnet5": {
+            "model": metrics["alexnet5"]["model"].to(args.device),
+            "preprocess": metrics["alexnet5"]["preprocess"],
+            "layer": metrics["alexnet5"]["layer"],
+            "metric_fn": metrics["alexnet5"]["metric_fn"],
+        },
+        "clip": {
+            "model": metrics["clip"]["model"].to(args.device),
+            "preprocess": metrics["clip"]["preprocess"],
+            "metric_fn": metrics["clip"]["metric_fn"],
+        },
+        "inception": {
+            "model": metrics["inception"]["model"].to(args.device),
+            "preprocess": metrics["inception"]["preprocess"],
+            "metric_fn": metrics["inception"]["metric_fn"],
+        },
+        "efficientnet": {
+            "model": metrics["efficientnet"]["model"].to(args.device),
+            "preprocess": metrics["efficientnet"]["preprocess"],
+            "metric_fn": metrics["efficientnet"]["metric_fn"],
+        },
+        "swav": {
+            "model": metrics["swav"]["model"].to(args.device),
+            "preprocess": metrics["swav"]["preprocess"],
+            "metric_fn": metrics["swav"]["metric_fn"],
+        },
+    }
+
+    # wandb 적용
+    wandb.login() # login
+    wandb.init(project="neural_decoding_highlevel", name=f"run-{wandb.util.generate_id()}", config=vars(args)) # init
+
+    high_train_inference_evaluate(args, train_data, test_data, model_bundle, optimizer, lr_scheduler, metric_bundle)
+
+
 if __name__ == "__main__":
-    main()
+    # main()
     # main_high_all()
     # main_low_all()
+    main_high_all_FuncSpatial()

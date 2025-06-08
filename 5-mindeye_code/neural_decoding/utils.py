@@ -265,7 +265,6 @@ def reconstruction(
         init_latents = vae.encode(img_lowlevel_embeddings.to(device).to(vae.dtype)).latent_dist.sample(generator)
         init_latents = vae.config.scaling_factor * init_latents
         init_latents = init_latents.repeat_interleave(recons_per_sample, dim=0)
-        print(init_latents.shape)
 
         # low level image에 noise 씌움 = versatile 준비 완료
         noise = torch.randn([recons_per_sample, 4, 64, 64], device=device, 

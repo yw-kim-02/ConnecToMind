@@ -182,6 +182,64 @@ class hug_TestDataset(Dataset): # ses단위로 실행
             low_image = []
 
         return fmri_vol, image, low_image, self.cocoid[idx]
+    
+class FuncSpatial_TrainDataset(Dataset): # ses단위로 실행
+    def __init__(self, fmri_path, image_path, transform):
+        self.data = np.load(fmri_path, mmap_mode='r', allow_pickle=True) # 포인터만 받아와서 메모리에 올라온 것은 아님
+        self.fmri = self.data['X']
+        self.cocoid = self.data['Y']
+        self.image_path = image_path
+        self.transform = transform # PIL.Image -> tensor
+       
+
+    def __len__(self):
+        return len(self.cocoid)
+
+    def __getitem__(self, idx): 
+        # fMRI 데이터 로딩
+        fmri_vol = torch.tensor(self.fmri[idx], dtype=torch.float32)
+
+        # 이미지 로딩
+        image_path = os.path.join(self.image_path, self.cocoid[idx])
+        image = Image.open(image_path).convert('RGB')
+        if self.transform:
+            image = self.transform(image)
+
+        return fmri_vol, image
+
+class FuncSpatial_TestDataset(Dataset): # ses단위로 실행
+    def __init__(self, fmri_path, image_path, low_image_path, transform, use_low_image):
+        self.data = np.load(fmri_path, mmap_mode='r', allow_pickle=True) # 포인터만 받아와서 메모리에 올라온 것은 아님
+        self.fmri = self.data['X']
+        self.cocoid = self.data['Y']
+        self.image_path = image_path
+        self.low_image_path = low_image_path
+        self.transform = transform # PIL.Image -> tensor
+        self.use_low_image = use_low_image
+
+    def __len__(self):
+        return len(self.cocoid)
+
+    def __getitem__(self, idx): 
+        # fMRI 데이터 로딩
+        fmri_vol = torch.tensor(self.fmri[idx], dtype=torch.float32)
+
+        # 이미지 로딩
+        image_path = os.path.join(self.image_path, self.cocoid[idx])
+        low_image_path = os.path.join(self.low_image_path, self.cocoid[idx])
+
+        image = Image.open(image_path).convert('RGB')
+        if self.transform:
+            image = self.transform(image)
+
+        if self.use_low_image:
+            low_image = Image.open(low_image_path).convert('RGB')
+            if self.transform:
+                low_image = self.transform(low_image)
+        else:
+            low_image = []
+
+        return fmri_vol, image, low_image, self.cocoid[idx]
 
 def sub1_train_dataset(args): # ses단위로 실행
 
@@ -313,15 +371,47 @@ def sub1_test_dataset_hug(args):
     
     return test_dataset
 
+def sub1_train_dataset_FuncSpatial(args):
+    root_dir = args.root_dir
+    fmri_dir = args.fmri_dir
+    fmri_detail_dir = args.fmri_detail_dir
+    image_dir = args.image_dir
+    transform = transforms.ToTensor()
+    
+    fmri_path = f"{root_dir}/{fmri_dir}/{fmri_detail_dir}/beta_hf_dk_train.npz"
+    image_path = f"{root_dir}/{image_dir}"
+ 
+    train_dataset = FuncSpatial_TrainDataset(fmri_path, image_path, transform)
+    
+    return train_dataset
+
+def sub1_test_dataset_FuncSpatial(args):
+    root_dir = args.root_dir
+    fmri_dir = args.fmri_dir
+    fmri_detail_dir = args.fmri_detail_dir
+    image_dir = args.image_dir
+    code_dir = args.code_dir
+    output_dir= args.output_dir
+    transform = transforms.ToTensor()
+    use_low_image = args.use_low_image
+    
+    fmri_path = f"{root_dir}/{fmri_dir}/{fmri_detail_dir}/beta_hf_dk_test.npz"
+    image_path = f"{root_dir}/{image_dir}"
+    low_image_path = f"{root_dir}/{code_dir}/{output_dir}/low_recons"
+ 
+    test_dataset = FuncSpatial_TestDataset(fmri_path, image_path, low_image_path, transform, use_low_image)
+    
+    return test_dataset
+
 def get_dataloader(args):
 
     if args.mode == 'train':
-        train_dataset = sub1_train_dataset_hug(args)
+        train_dataset = sub1_train_dataset_FuncSpatial(args)
         train_loader = DataLoader(train_dataset, batch_size=args.batch_size, num_workers=args.num_workers, prefetch_factor=args.prefetch_factor, persistent_workers=False, pin_memory=True, shuffle=True, worker_init_fn=worker_init_fn)
         return train_loader
     
     if args.mode == 'inference':
-        test_dataset = sub1_test_dataset_hug(args)
+        test_dataset = sub1_test_dataset_FuncSpatial(args)
         test_loader = DataLoader(test_dataset, batch_size=args.inference_batch_size, num_workers=args.num_workers, prefetch_factor=args.prefetch_factor, persistent_workers=False, pin_memory=True, worker_init_fn=worker_init_fn)
         return test_loader
     

@@ -5,6 +5,43 @@ import torch
 def parse_args():
     parser = argparse.ArgumentParser(description="Model Training Configuration")
 
+    ###### Frequently changing settings ######
+    parser.add_argument(
+        '--mode', type=str, choices=['train', 'inference', 'evaluate'], default='train',
+        help="train, inference, evaluate 구분"
+    )
+    parser.add_argument(
+        "--num_epochs",type=int,default=270, choices=[3,240],
+        help="epoch 개수",
+    )
+    parser.add_argument(
+        "--device",type=str,default="cuda:3",
+        help='device',
+    )
+    parser.add_argument(
+        "--batch_size", type=int, default=128,
+        help="Batch size can be increased by 10x if only training v2c and not diffusion prior",
+    )
+    parser.add_argument(
+        "--prefetch_factor", type=int, default=8, choices=[2,4,6,8],
+        help="한 프로세스에서 몇 개 처리할지",
+    )
+    parser.add_argument(
+        "--num_workers", type=int, default=20, choices=[4,8,12,16,20],
+        help="multi-processing in dataloader-메모리와 cpu개수에 맞게 조정",
+    )
+    parser.add_argument(
+        "--num_layers", type=int, default=2, choices=[4,6,8],
+    )
+    parser.add_argument(
+        "--is_position",action=argparse.BooleanOptionalAction,default=False,
+        help="cosine matrix 사용유무",
+    )
+    parser.add_argument(
+        "--is_cosine",action=argparse.BooleanOptionalAction,default=True,
+        help="cosine matrix 사용유무",
+    )
+
     ###### data.py ######
     parser.add_argument(
         "--root_dir", type=str, default="/nas/research/03-Neural_decoding",
@@ -15,7 +52,7 @@ def parse_args():
         help="Path to the BIDS fmri."
     )
     parser.add_argument(
-        "--fmri_detail_dir", type=str, default="beta_huggingface",
+        "--fmri_detail_dir", type=str, default="beta_hf_dk",
         choices=["b4_roi_zscore"],
         help="Path to the BIDS fmri_detail."
     )
@@ -25,26 +62,6 @@ def parse_args():
     )
     parser.add_argument(
         "--seed",type=int,default=42,
-    )
-    parser.add_argument(
-        '--mode', type=str, choices=['train', 'inference', 'evaluate'], default='inference',
-        help="train, inference, evaluate 구분"
-    )
-    parser.add_argument(
-        "--batch_size", type=int, default=80,
-        help="Batch size can be increased by 10x if only training v2c and not diffusion prior",
-    )
-    parser.add_argument(
-        "--prefetch_factor", type=int, default=10, choices=[2,4,6,8],
-        help="한 프로세스에서 몇 개 처리할지",
-    )
-    parser.add_argument(
-        "--num_workers", type=int, default=30, choices=[4,8,12,16,20],
-        help="multi-processing in dataloader-메모리와 cpu개수에 맞게 조정",
-    )
-    parser.add_argument(
-        "--num_epochs",type=int,default=270, choices=[3,240],
-        help="epoch 개수",
     )
     parser.add_argument(
         "--is_shuffle",type=argparse.BooleanOptionalAction,default=False,
@@ -65,10 +82,6 @@ def parse_args():
     ####################
 
     ###### mindeye1 ######
-    parser.add_argument(
-        "--device",type=str,default="cuda:3",
-        help='device',
-    )
     parser.add_argument(
         "--subj",type=int, default=1, choices=[1,2,5,7],
     )
@@ -98,6 +111,16 @@ def parse_args():
         help="Where is cached Diffusion model; if not cached will download to this path",
     )
     ####################
+
+    ###### FuncSpatial-Backbone ######
+    # parser.add_argument(
+    #     "--num_layers", type=int, default=2, choices=[4,6,8],
+    # )
+    # parser.add_argument(
+    #     "--is_cosine",action=argparse.BooleanOptionalAction,default=True,
+    #     help="cosine matrix 사용유무",
+    # )
+
 
     ###### optimizer ######
     parser.add_argument(
