@@ -254,14 +254,8 @@ class CustomMultiheadAttention(nn.Module):
         
         # cosine simility 사전정보 주입
         cosine_bias = self.cosine_similarity_matrix(x)
-        print(f"[DEBUG] cosine_bias shape: {cosine_bias.shape}")
-        print(f"[DEBUG] cosine_bias min: {cosine_bias.min().item():.4f}, max: {cosine_bias.max().item():.4f}")
         cosine_bias = cosine_bias.unsqueeze(1)  # (B, 1, T, T) for broadcasting
         attn_scores = attn_scores + cosine_bias
-
-        print(f"[DEBUG] cosine_bias (unsqueezed) shape: {cosine_bias.shape}")
-        print(f"[DEBUG] attn_scores shape: {attn_scores.shape}")
-        print(f"[DEBUG] attn_scores min: {attn_scores.min().item():.4f}, max: {attn_scores.max().item():.4f}")
 
         attn_weights = torch.softmax(attn_scores, dim=-1)
         attn_weights = self.dropout(attn_weights)

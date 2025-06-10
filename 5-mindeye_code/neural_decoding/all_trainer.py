@@ -25,6 +25,8 @@ def high_train_inference_evaluate(args, train_data, test_data, models, optimizer
     mixup_pct = args.mixup_pct
     clip_size = args.clip_size
     prior_loss_coefficient = args.prior_loss_coefficient
+    only_reconstruction = args.only_reconstruction
+    experiment_name = args.experiment_name
 
     # test argument
     seed = args.seed
@@ -50,9 +52,6 @@ def high_train_inference_evaluate(args, train_data, test_data, models, optimizer
     for epoch in progress_bar:
         
         # 기본 log
-        sims_base = 0.0 # cosinesimilarity[(fMRI → CLIP), (image → CLIP)]의 누적합 -> 평균 구할 때 쓰임
-        fwd_percent_correct = 0.0 # forward prediction이 정답과의 cosinesimilarity가 가장 높으면 1, 아니면 0 -> 비율의 누적합 -> 평균 구할 때 쓰임
-        bwd_percent_correct = 0.0 # backward prediction이 정답과의 cosinesimilarity가 가장 높으면 1, 아니면 0 -> 비율의 누적합 -> 평균 구할 때 쓰임
         loss_nce_sum = 0.0 # Negative Contrastive Estimation loss의 누적합 -> 평균 구할 때 쓰임
         loss_prior_sum = 0.0 # prior loss의 누적합 -> 평균 구할 때 쓰임
 
@@ -85,29 +84,33 @@ def high_train_inference_evaluate(args, train_data, test_data, models, optimizer
                 clip_voxels, clip_voxels_proj = diffusion_prior.voxel2clip(fmri_vol)
                 clip_voxels = clip_voxels.view(len(fmri_vol),-1,clip_size) # [B, (257 * 768)] -> [B, 257, 768]
 
+                
                 # forward(Diffusion prior) -> prior loss
                 prior_loss, clip_voxels_prediction = diffusion_prior(text_embed=clip_voxels, image_embed=clip_target) # text(prediction) = fMRI, image(label) = image
-                clip_voxels_prediction = clip_voxels_prediction / diffusion_prior.image_embed_scale # scale한 것을 원상태로 대돌려 놓음
-                # forward(MLP projector) -> contrstive loss(mixco_nce_loss + soft_clip_loss)
-                clip_voxels_norm = nn.functional.normalize(clip_voxels_proj.flatten(1), dim=-1) # cosine simility를 위해 미리 nomalization
-                clip_target_norm = nn.functional.normalize(clip_target.flatten(1), dim=-1) # cosine simility를 위해 미리 nomalization
-                # mixco_nce_loss(1/3) + soft_loss_temps(2/3)
-                if epoch < int(mixup_pct * num_epochs):
-                    nce_loss = mixco_nce_loss(
-                        clip_voxels_norm,
-                        clip_target_norm,
-                        temp=.006, 
-                        perm=perm, betas=betas, select=select)
+                if only_reconstruction:
+                    loss = prior_loss_coefficient * prior_loss
                 else:
-                    soft_loss_temps = cosine_anneal(0.004, 0.0075, num_epochs - int(mixup_pct * num_epochs))
-                    epoch_temp = soft_loss_temps[epoch-int(mixup_pct*num_epochs)]
-                    nce_loss = soft_clip_loss(
-                        clip_voxels_norm,
-                        clip_target_norm,
-                        temp=epoch_temp)
+                    clip_voxels_prediction = clip_voxels_prediction / diffusion_prior.image_embed_scale # scale한 것을 원상태로 대돌려 놓음
+                    # forward(MLP projector) -> contrstive loss(mixco_nce_loss + soft_clip_loss)
+                    clip_voxels_norm = nn.functional.normalize(clip_voxels_proj.flatten(1), dim=-1) # cosine simility를 위해 미리 nomalization
+                    clip_target_norm = nn.functional.normalize(clip_target.flatten(1), dim=-1) # cosine simility를 위해 미리 nomalization
+                    # mixco_nce_loss(1/3) + soft_loss_temps(2/3)
+                    if epoch < int(mixup_pct * num_epochs):
+                        nce_loss = mixco_nce_loss(
+                            clip_voxels_norm,
+                            clip_target_norm,
+                            temp=.006, 
+                            perm=perm, betas=betas, select=select)
+                    else:
+                        soft_loss_temps = cosine_anneal(0.004, 0.0075, num_epochs - int(mixup_pct * num_epochs))
+                        epoch_temp = soft_loss_temps[epoch-int(mixup_pct*num_epochs)]
+                        nce_loss = soft_clip_loss(
+                            clip_voxels_norm,
+                            clip_target_norm,
+                            temp=epoch_temp)
 
-                # 최종 loss 정의 
-                loss = nce_loss + (prior_loss_coefficient * prior_loss)
+                    # 최종 loss 정의 
+                    loss = nce_loss + (prior_loss_coefficient * prior_loss)
 
                 # NaN 체크 + 넘김
                 if check_nan_and_log(global_step=global_step, fmri_vol=fmri_vol, clip_voxels=clip_voxels, loss=loss):
@@ -135,16 +138,8 @@ def high_train_inference_evaluate(args, train_data, test_data, models, optimizer
             lrs.append(optimizer.param_groups[0]['lr'])
 
             # loss 누적 합
-            loss_nce_sum += nce_loss.item() 
+            # loss_nce_sum += nce_loss.item() 
             loss_prior_sum += prior_loss.item()
-
-            # cosinesimilarity 누적 합
-            sims_base += nn.functional.cosine_similarity(clip_target_norm,clip_voxels_norm).mean().item() # item(): tensor에서 값만 출력 ex) torch.tensor(0.425, requires_grad=True)에서 0.425출력
-            
-            # top k 계산
-            labels = torch.arange(len(clip_target_norm)).to(device) 
-            fwd_percent_correct += topk(batchwise_cosine_similarity(clip_voxels_norm, clip_target_norm), labels, k=1)
-            bwd_percent_correct += topk(batchwise_cosine_similarity(clip_target_norm, clip_voxels_norm), labels, k=1)
 
             logs = {
                 "train/num_steps": index + 1,
@@ -152,7 +147,7 @@ def high_train_inference_evaluate(args, train_data, test_data, models, optimizer
                 "train/global_step": global_step,
                 "train/epoch": epoch,
                 "train/loss": losses[-1],
-                "train/loss_nce": nce_loss,
+                # "train/loss_nce": nce_loss,
                 "train/loss_prior": prior_loss,
 
                 "debug/fmri_nan": float(torch.isnan(fmri_vol).any().item()),
@@ -163,10 +158,6 @@ def high_train_inference_evaluate(args, train_data, test_data, models, optimizer
                 "debug/voxel2clip_max": clip_voxels.max().item(),
                 "debug/loss_nan": float(torch.isnan(loss).item()),
 
-                "train/cosine_sim_mean": sims_base / len(losses),
-                "train/fwd_pct_correct_mean": fwd_percent_correct / len(losses),
-                "train/bwd_pct_correct_mean": bwd_percent_correct / len(losses),
-
             }
             progress_bar.set_postfix(**logs) # cli에 시각화
             wandb.log(logs, step=global_step) # wandb에 시각화
@@ -174,7 +165,8 @@ def high_train_inference_evaluate(args, train_data, test_data, models, optimizer
         torch.cuda.empty_cache() # gpu 메모리 cache삭제
         gc.collect() # # gpu 메모리 안 쓰는거 삭제
 
-        if epoch >= 240 and epoch % 4 == 0:
+        if epoch >= 200 and epoch % 5 == 0:
+        # if epoch % 10 == 0:
 
             #### inference ####
             all_recons = []
@@ -300,7 +292,7 @@ def high_train_inference_evaluate(args, train_data, test_data, models, optimizer
             if current_score > best_clip_score and current_score > 0.9:
                 best_clip_score = current_score  # 최대값 업데이트
 
-                save_path = os.path.join(args.root_dir, args.code_dir, args.output_dir, f"mindeye1_{epoch}.pt")
+                save_path = os.path.join(args.root_dir, args.code_dir, args.output_dir, f"mindeye1_{epoch}_{experiment_name}.pt")
                 save_path = get_unique_path(save_path)
                 torch.save(diffusion_prior.state_dict(), save_path)
                 print(f"Final model saved to {save_path} (metric > 0.9)")
@@ -310,7 +302,7 @@ def high_train_inference_evaluate(args, train_data, test_data, models, optimizer
                 save_gt_vs_recon_images(save_recons, recons_dir)
 
                 # 결과를 텍스트 파일로 저장
-                result_path = os.path.join(args.root_dir, args.code_dir, args.output_dir, f"mindeye1_metrics_{epoch}.txt")
+                result_path = os.path.join(args.root_dir, args.code_dir, args.output_dir, f"mindeye1_metrics_{epoch}_{experiment_name}.txt")
                 result_path = get_unique_path(result_path)
                 with open(result_path, "w") as f:
                     for name, score in results.items():
@@ -323,6 +315,7 @@ def low_train_inference_evaluate(args, train_data, test_data, models, optimizer,
 
     # train argument
     device = args.device
+    experiment_name = args.experiment_name
 
     # test argument
     seed = args.seed
@@ -532,7 +525,7 @@ def low_train_inference_evaluate(args, train_data, test_data, models, optimizer,
             if current_score > best_alexnet2_score and current_score > 0.7:
                 best_alexnet2_score = current_score  # 최대값 업데이트
 
-                save_path = os.path.join(args.root_dir, args.code_dir, args.output_dir, f"mindeye1_low_{epoch}.pt")
+                save_path = os.path.join(args.root_dir, args.code_dir, args.output_dir, f"mindeye1_low_{epoch}_{experiment_name}.pt")
                 save_path = get_unique_path(save_path)
                 torch.save(voxel2sd.state_dict(), save_path)
                 print(f"Final model saved to {save_path} (metric > 0.7)")
@@ -544,7 +537,7 @@ def low_train_inference_evaluate(args, train_data, test_data, models, optimizer,
                     save_image(img_tensor, save_path)  # 이미지 저장
 
                 # 결과를 텍스트 파일로 저장
-                result_path = os.path.join(args.root_dir, args.code_dir, args.output_dir, f"mindeye1_low_metrics_{epoch}.txt")
+                result_path = os.path.join(args.root_dir, args.code_dir, args.output_dir, f"mindeye1_low_metrics_{epoch}_{experiment_name}.txt")
                 result_path = get_unique_path(result_path)
                 with open(result_path, "w") as f:
                     for name, score in results.items():

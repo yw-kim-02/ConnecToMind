@@ -11,35 +11,48 @@ def parse_args():
         help="train, inference, evaluate 구분"
     )
     parser.add_argument(
-        "--num_epochs",type=int,default=270, choices=[3,240],
+        "--num_epochs",type=int,default=245, choices=[3,240],
         help="epoch 개수",
     )
     parser.add_argument(
-        "--device",type=str,default="cuda:3",
+        "--device",type=str,default="cuda:1",
         help='device',
     )
     parser.add_argument(
-        "--batch_size", type=int, default=128,
-        help="Batch size can be increased by 10x if only training v2c and not diffusion prior",
+        "--batch_size", type=int, default=80,
+        help="Batch size(H100:160, L40:80)",
     )
     parser.add_argument(
-        "--prefetch_factor", type=int, default=8, choices=[2,4,6,8],
-        help="한 프로세스에서 몇 개 처리할지",
+        "--inference_batch_size",type=int,default=10,
+        help="versatile inference batch size(H100:25, L40:10)",
     )
     parser.add_argument(
-        "--num_workers", type=int, default=20, choices=[4,8,12,16,20],
-        help="multi-processing in dataloader-메모리와 cpu개수에 맞게 조정",
+        "--prefetch_factor", type=int, default=5, choices=[2,4,6,8],
+        help="한 프로세스에서 몇 개 처리할지(H100:10, L40:5)",
+    )
+    parser.add_argument(
+        "--num_workers", type=int, default=10, choices=[4,8,12,16,20],
+        help="multi-processing in dataloader-메모리와 cpu개수에 맞게 조정(H100:20, L40:10)",
     )
     parser.add_argument(
         "--num_layers", type=int, default=2, choices=[4,6,8],
+    )
+    parser.add_argument(
+        "--only_reconstruction",action=argparse.BooleanOptionalAction,default=True,
+        help="contrastive loss 사용 안하면 true",
+    )
+    parser.add_argument(
+        "--is_cosine",action=argparse.BooleanOptionalAction,default=False,
+        help="cosine matrix 사용유무",
     )
     parser.add_argument(
         "--is_position",action=argparse.BooleanOptionalAction,default=False,
         help="cosine matrix 사용유무",
     )
     parser.add_argument(
-        "--is_cosine",action=argparse.BooleanOptionalAction,default=True,
-        help="cosine matrix 사용유무",
+        "--experiment_name", type=str, default="onlyprior_vanila_layer2",
+        choices=["onlyprior, vanila"],
+        help="experiment_name 새부이름"
     )
 
     ###### data.py ######
@@ -158,10 +171,6 @@ def parse_args():
     parser.add_argument(
         "--model_name", type=str, default="mindeye1",
         help="모델 이름"
-    )
-    parser.add_argument(
-        "--inference_batch_size",type=int,default=10,
-        help="versatile inference batch size",
     )
     parser.add_argument(
         "--recons_per_sample", type=int, default=1,
