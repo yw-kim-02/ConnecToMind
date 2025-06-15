@@ -11,48 +11,52 @@ def parse_args():
         help="train, inference, evaluate 구분"
     )
     parser.add_argument(
-        "--num_epochs",type=int,default=245, choices=[3,240],
+        "--num_epochs",type=int,default=250, choices=[3,240],
         help="epoch 개수",
     )
     parser.add_argument(
-        "--device",type=str,default="cuda:1",
+        "--device",type=str,default="cuda:3",
         help='device',
     )
     parser.add_argument(
-        "--batch_size", type=int, default=80,
-        help="Batch size(H100:160, L40:80)",
+        "--batch_size", type=int, default=160,
+        help="Batch size(H100:160, L40:90), if benchmark L40:30",
     )
     parser.add_argument(
-        "--inference_batch_size",type=int,default=10,
+        "--inference_batch_size",type=int,default=25,
         help="versatile inference batch size(H100:25, L40:10)",
     )
     parser.add_argument(
-        "--prefetch_factor", type=int, default=5, choices=[2,4,6,8],
+        "--prefetch_factor", type=int, default=10, choices=[2,4,6,8],
         help="한 프로세스에서 몇 개 처리할지(H100:10, L40:5)",
     )
     parser.add_argument(
-        "--num_workers", type=int, default=10, choices=[4,8,12,16,20],
-        help="multi-processing in dataloader-메모리와 cpu개수에 맞게 조정(H100:20, L40:10)",
+        "--num_workers", type=int, default=30, choices=[4,8,12,16,20],
+        help="multi-processing in dataloader-메모리와 cpu개수에 맞게 조정(H100:30, L40:10)",
     )
     parser.add_argument(
-        "--num_layers", type=int, default=2, choices=[4,6,8],
-    )
-    parser.add_argument(
-        "--only_reconstruction",action=argparse.BooleanOptionalAction,default=True,
+        "--only_reconstruction",action=argparse.BooleanOptionalAction,default=False,
         help="contrastive loss 사용 안하면 true",
     )
     parser.add_argument(
-        "--is_cosine",action=argparse.BooleanOptionalAction,default=False,
+        "--num_layers", type=int, default=1, choices=[1,2,4,6,8],
+    )
+    parser.add_argument(
+        "--is_fc",action=argparse.BooleanOptionalAction,default=True,
         help="cosine matrix 사용유무",
     )
     parser.add_argument(
-        "--is_position",action=argparse.BooleanOptionalAction,default=False,
+        "--is_position",action=argparse.BooleanOptionalAction,default=True,
         help="cosine matrix 사용유무",
     )
     parser.add_argument(
-        "--experiment_name", type=str, default="onlyprior_vanila_layer2",
+        "--experiment_name", type=str, default="fc(1)_learnable_layer1",
         choices=["onlyprior, vanila"],
         help="experiment_name 새부이름"
+    )
+    parser.add_argument(
+        "--fc_matrix_path", type=str, default="/nas/research/03-Neural_decoding/3-bids/derivatives/raw_rest/sub-01/fc_matrix_vis20_mean.npy",
+        help="fc matrix 경로"
     )
 
     ###### data.py ######
@@ -66,7 +70,7 @@ def parse_args():
     )
     parser.add_argument(
         "--fmri_detail_dir", type=str, default="beta_hf_dk",
-        choices=["b4_roi_zscore"],
+        choices=["b4_roi_zscore","beta_huggingface","beta_hf_dk"],
         help="Path to the BIDS fmri_detail."
     )
     parser.add_argument(

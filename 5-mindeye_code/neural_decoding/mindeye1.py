@@ -126,7 +126,7 @@ class Clipper(torch.nn.Module):
         return embeds 
     
 class BrainTransformerNetwork(nn.Module):
-    def __init__(self, input_dim=2056, embed_dim=768, output_dim=257, seq_len=20, nhead=8, num_layers=8, is_position=False, is_cosine=False):
+    def __init__(self, input_dim=2056, embed_dim=768, output_dim=257, seq_len=20, nhead=8, num_layers=8, is_position=False, is_fc=False, fc_matrix_path=""):
         super().__init__()
 
         # self.linear1 = nn.Sequential(
@@ -150,8 +150,8 @@ class BrainTransformerNetwork(nn.Module):
         # positional embedding
         self.pos_embedding = nn.Parameter(torch.randn(1, seq_len, embed_dim))
 
-        if is_cosine:
-            encoder_layer = CustomTransformerEncoderLayer(d_model=embed_dim, nhead=nhead)
+        if is_fc:
+            encoder_layer = CustomTransformerEncoderLayer(fc_matrix_path=fc_matrix_path, d_model=embed_dim, nhead=nhead)
         else:
             encoder_layer = nn.TransformerEncoderLayer(d_model=embed_dim, nhead=nhead, batch_first=True)
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
@@ -195,8 +195,9 @@ class BrainTransformerNetwork(nn.Module):
         return x, self.projector(x.reshape(len(x), -1, self.embed_dim))
     
 class CustomTransformerEncoderLayer(nn.Module):
-    def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1):
+    def __init__(self, fc_matrix_path, d_model, nhead, dim_feedforward=2048, dropout=0.1):
         super().__init__()
+        self.fc_matrix_path = fc_matrix_path
         self.self_attn = CustomMultiheadAttention(d_model, nhead, dropout=dropout)
 
         # Feedforward network
@@ -216,7 +217,7 @@ class CustomTransformerEncoderLayer(nn.Module):
     def forward(self, x, src_mask=None, is_causal=False, src_key_padding_mask=None):
         # Self-attention block
         residual = x
-        x = self.self_attn(x)
+        x = self.self_attn(x, self.fc_matrix_path)
         x = residual + self.dropout1(x)
         x = self.norm1(x)
 
@@ -239,7 +240,7 @@ class CustomMultiheadAttention(nn.Module):
         self.out_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x):
+    def forward(self, x, fc_matrix_path):
         B, T, E = x.shape
         
         # q, k, v 한 번에 계산하고 쪼갬
@@ -251,11 +252,14 @@ class CustomMultiheadAttention(nn.Module):
         v = v.view(B, T, self.num_heads, self.head_dim).transpose(1, 2)
 
         attn_scores = torch.matmul(q, k.transpose(-2, -1)) / (self.head_dim ** 0.5)
-        
-        # cosine simility 사전정보 주입
-        cosine_bias = self.cosine_similarity_matrix(x)
-        cosine_bias = cosine_bias.unsqueeze(1)  # (B, 1, T, T) for broadcasting
-        attn_scores = attn_scores + cosine_bias
+
+
+        # FC 사용
+        fc_matrix = np.load(fc_matrix_path)        # shape (T, T)
+        fc_matrix = torch.from_numpy(fc_matrix).float().to(x.device)
+        fc_matrix = fc_matrix.unsqueeze(0).unsqueeze(0)
+        fc_matrix = fc_matrix.expand(B, 1, T, T)
+        attn_scores = attn_scores + fc_matrix * 1
 
         attn_weights = torch.softmax(attn_scores, dim=-1)
         attn_weights = self.dropout(attn_weights)
@@ -1096,7 +1100,7 @@ def get_model_highlevel_FuncSpatial(args):
     
     #### brain network 정의 ####
     out_dim = args.token_size * args.clip_size # 257 * 768
-    voxel2clip_kwargs = dict(input_dim=2056, embed_dim=768, output_dim=257, seq_len=20, nhead=8, num_layers=args.num_layers, is_cosine=args.is_cosine)
+    voxel2clip_kwargs = dict(input_dim=2056, embed_dim=768, output_dim=257, seq_len=20, nhead=8, num_layers=args.num_layers, is_fc=args.is_fc, fc_matrix_path=args.fc_matrix_path)
     voxel2clip = BrainTransformerNetwork(**voxel2clip_kwargs)
 
     #### difussion prior 정의 ####
