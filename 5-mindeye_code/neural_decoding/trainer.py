@@ -5,6 +5,7 @@ from tqdm import tqdm
 import wandb
 
 import numpy as np
+from scipy import stats
 import torch
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
@@ -13,7 +14,7 @@ from torch.cuda.amp import autocast, GradScaler
 from torch.utils.data.distributed import DistributedSampler
 from torch.profiler import profile, record_function, ProfilerActivity
 
-from utils import img_augment_high, mixup, mixco_nce_loss, cosine_anneal, soft_clip_loss, topk, batchwise_cosine_similarity, log_gradient_norms, check_nan_and_log, reconstruction
+from utils import img_augment_high, mixup, mixco_nce_loss, cosine_anneal, soft_clip_loss, topk, batchwise_cosine_similarity, log_gradient_norms, check_nan_and_log, reconstruction, get_unique_path
 
 def train(args, data, models, optimizer, lr_scheduler):
 
@@ -103,11 +104,6 @@ def train(args, data, models, optimizer, lr_scheduler):
                 #### backward 계산 + update ####
                 # gradient 계산 - amp사용
                 scaler.scale(loss).backward() # amp사용
-
-                # # gradient clipping 처리
-                log_gradient_norms(diffusion_prior, global_step)
-                # scaler.unscale_(optimizer) # scaler.step(optimizer)하면 알아서 다시 scale됨
-                # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 
                 # optimizer update - amp사용
                 scaler.step(optimizer) # amp사용
@@ -298,4 +294,64 @@ def evaluate(args, all_recons, all_targets, metrics):
 
     return results
 
+def retrieval_evaluate(args, data, models, model_path):
+    device = args.device
+    seed = args.seed
+    
+    # model 정의 + train된 파라미터 불러오기
+    clip_extractor = models["clip"]
+    diffusion_prior = models["diffusion_prior"]
 
+    state_dict = torch.load(model_path, map_location=args.device) # 파라미터 불러오기
+    diffusion_prior.load_state_dict(state_dict)
+
+    # for metric 
+    percent_correct_fwds, percent_correct_bwds = [], []
+    percent_correct_fwd, percent_correct_bwd = None, None
+
+    diffusion_prior.eval()
+    progress_bar = tqdm(enumerate(data), total=len(data), ncols=120)
+    for index, (fmri_vol, image, low_image, image_id) in progress_bar: # enumerate: index와 값을 같이 반환
+        with torch.inference_mode():
+            #### forward inference ####
+            # noise 난수 고정
+            generator = torch.Generator(device=device)
+            generator.manual_seed(seed)
+
+            # data + gpu 올리기
+            fmri_vol = fmri_vol.to(device)   # fMRI -> GPU
+            image = image.to(device)         # Image -> GPU
+
+            # target 정의
+            clip_target = clip_extractor.embed_image(image).float()
+            # forward(MLP backbone) -> prior에 들어갈 embedding생성
+            _, clip_voxels_proj = diffusion_prior.voxel2clip(fmri_vol)
+
+            # flatten if necessary
+            clip_target = clip_target.reshape(len(clip_target),-1)
+            clip_voxels_proj = clip_voxels_proj.reshape(len(clip_voxels_proj),-1)
+            
+            # l2norm 
+            clip_target_norm = nn.functional.normalize(clip_target,dim=-1)
+            clip_voxels_proj_norm = nn.functional.normalize(clip_voxels_proj,dim=-1)
+
+            labels = torch.arange(len(clip_target_norm)).to(device) 
+            fwd_sim = batchwise_cosine_similarity(clip_voxels_proj_norm, clip_target_norm)  # brain, clip
+            bwd_sim = batchwise_cosine_similarity(clip_target_norm, clip_voxels_proj_norm)  # clip, brain
+            
+
+            percent_correct_fwds = np.append(percent_correct_fwds, topk(fwd_sim, labels,k=1).item())
+            percent_correct_bwds = np.append(percent_correct_bwds, topk(bwd_sim, labels,k=1).item())
+
+    percent_correct_fwd = np.mean(percent_correct_fwds)
+    percent_correct_bwd = np.mean(percent_correct_bwds)
+
+
+    print(f"fwd percent_correct: {percent_correct_fwd:.4f}")
+    print(f"bwd percent_correct: {percent_correct_bwd:.4f}")
+    
+    result_path = os.path.join(args.root_dir, args.code_dir, args.output_dir, f"mindeye1_retrieval_metrics_{args.experiment_name}.txt")
+    result_path = get_unique_path(result_path)
+    with open(result_path, "w") as f:
+        f.write(f"Forward Retrieval Accuracy: {percent_correct_fwd:.4f}\n")
+        f.write(f"Backward Retrieval Accuracy: {percent_correct_bwd:.4f}\n")

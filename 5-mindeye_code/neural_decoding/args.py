@@ -27,11 +27,11 @@ def parse_args():
         help="versatile inference batch size(H100:25, L40:10)",
     )
     parser.add_argument(
-        "--prefetch_factor", type=int, default=10, choices=[2,4,6,8],
+        "--prefetch_factor", type=int, default=10, choices=[2,4,5,6,8,10],
         help="한 프로세스에서 몇 개 처리할지(H100:10, L40:5)",
     )
     parser.add_argument(
-        "--num_workers", type=int, default=30, choices=[4,8,12,16,20],
+        "--num_workers", type=int, default=30, choices=[4,8,10,12,16,20,30],
         help="multi-processing in dataloader-메모리와 cpu개수에 맞게 조정(H100:30, L40:10)",
     )
     parser.add_argument(
@@ -51,7 +51,6 @@ def parse_args():
     )
     parser.add_argument(
         "--experiment_name", type=str, default="fc(1)_learnable_layer1",
-        choices=["onlyprior, vanila"],
         help="experiment_name 새부이름"
     )
     parser.add_argument(

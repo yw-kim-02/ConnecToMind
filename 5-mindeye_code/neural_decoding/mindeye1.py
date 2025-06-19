@@ -259,7 +259,7 @@ class CustomMultiheadAttention(nn.Module):
         fc_matrix = torch.from_numpy(fc_matrix).float().to(x.device)
         fc_matrix = fc_matrix.unsqueeze(0).unsqueeze(0)
         fc_matrix = fc_matrix.expand(B, 1, T, T)
-        attn_scores = attn_scores + fc_matrix * 1
+        attn_scores = attn_scores + fc_matrix * 0.7
 
         attn_weights = torch.softmax(attn_scores, dim=-1)
         attn_weights = self.dropout(attn_weights)
@@ -1100,7 +1100,7 @@ def get_model_highlevel_FuncSpatial(args):
     
     #### brain network 정의 ####
     out_dim = args.token_size * args.clip_size # 257 * 768
-    voxel2clip_kwargs = dict(input_dim=2056, embed_dim=768, output_dim=257, seq_len=20, nhead=8, num_layers=args.num_layers, is_fc=args.is_fc, fc_matrix_path=args.fc_matrix_path)
+    voxel2clip_kwargs = dict(input_dim=2056, embed_dim=768, output_dim=257, seq_len=20, nhead=8, num_layers=args.num_layers, is_position=args.is_position, is_fc=args.is_fc, fc_matrix_path=args.fc_matrix_path)
     voxel2clip = BrainTransformerNetwork(**voxel2clip_kwargs)
 
     #### difussion prior 정의 ####

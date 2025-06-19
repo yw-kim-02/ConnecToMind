@@ -1,0 +1,13 @@
+benchmark retrieval: python neural_decoding/main.py --device "cuda:0" --fmri_detail_dir "beta_huggingface" --experiment_name "benchmark" --inference_batch_size 300
+
+fc(1)_learnable_layer1_retrieval: python neural_decoding/main.py --device "cuda:2" --is_fc --is_position --fmri_detail_dir "beta_hf_dk" --experiment_name "fc(1)_learnable_layer1_후보" --inference_batch_size 300
+
+learnable_layer1_retrieval: python neural_decoding/main.py --device "cuda:0" --no-is_fc --is_position --experiment_name "learnable_layer1" --fmri_detail_dir "beta_hf_dk" --inference_batch_size 300
+
+vanila_layer1_retrieval: python neural_decoding/main.py --device "cuda:0" --no-is_fc --no-is_position --experiment_name "vanila_layer1" --fmri_detail_dir "beta_hf_dk" --inference_batch_size 300
+
+
+
+fc(0.7)_learnable_layer1: python neural_decoding/main.py --device "cuda:0" --is_fc --is_position --fmri_detail_dir "beta_hf_dk" --experiment_name "fc(0.7)_learnable_layer1" --batch_size 90 --inference_batch_size 10 --prefetch_factor 5 --num_workers 10 
+
+fc(0.5)_learnable_layer1: python neural_decoding/main.py --device "cuda:1" --is_fc --is_position --fmri_detail_dir "beta_hf_dk" --experiment_name "fc(0.5)_learnable_layer1" --batch_size 90 --inference_batch_size 10 --prefetch_factor 5 --num_workers 10 

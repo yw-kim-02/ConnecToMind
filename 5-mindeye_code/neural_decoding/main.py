@@ -15,7 +15,7 @@ from mindeye1 import get_model_highlevel, get_model_lowlevel, get_model_highleve
 from optimizers import get_optimizer_highlevel, get_optimizer_lowlevel
 from schedulers import get_scheduler
 from metrics import get_metric
-from trainer import train, inference, evaluate
+from trainer import train, inference, evaluate, retrieval_evaluate
 from all_trainer import high_train_inference_evaluate, low_train_inference_evaluate
 from utils import seed_everything, get_unique_path, save_gt_vs_recon_images
 
@@ -161,6 +161,7 @@ def main():
         # save_recons 저장
         recons_dir = os.path.join(args.root_dir, args.code_dir, args.output_dir, "recons")
         save_gt_vs_recon_images(save_recons, recons_dir)
+
 
 def main_high_all():
     args = parse_args()
@@ -376,9 +377,27 @@ def main_high_all_FuncSpatial():
 
     high_train_inference_evaluate(args, train_data, test_data, model_bundle, optimizer, lr_scheduler, metric_bundle)
 
+def retrieval():
+    args = parse_args()
+
+    setattr(args, 'mode', 'inference')
+    test_data = get_dataloader(args)
+
+    # model 정의
+    # models = get_model_highlevel(args)
+    models = get_model_highlevel_FuncSpatial(args) 
+    model_bundle = {
+        "clip": models["clip"].to(args.device),
+        "diffusion_prior": models["diffusion_prior"].to(args.device),
+    }
+    output_path = os.path.join(args.root_dir, args.code_dir, args.output_dir, 'recon_metric', 'mindeye1_236_fc(1)_learnable_layer1_후보.pt')
+
+    retrieval_evaluate(args, test_data, model_bundle, output_path)
+
 
 if __name__ == "__main__":
     # main()
     # main_high_all()
     # main_low_all()
-    main_high_all_FuncSpatial()
+    # main_high_all_FuncSpatial()
+    retrieval()
