@@ -1,6 +1,7 @@
 import os
 import gc
 import atexit
+import numpy as np
 
 import torch
 import torch.multiprocessing as mp
@@ -71,7 +72,7 @@ def main():
         test_data = get_dataloader(args)
 
         # model 정의
-        models = get_model_highlevel(args) 
+        models = get_model_highlevel_FuncSpatial(args) 
         model_bundle = {
             "clip": models["clip"].to(args.device),
             "diffusion_prior": models["diffusion_prior"].to(args.device),
@@ -84,7 +85,7 @@ def main():
         try:
             _ = output_path.shape
         except:
-            output_path = os.path.join(args.root_dir, args.code_dir, args.output_dir, 'mindeye1_240.pt') # mindeye1.pt이 
+            output_path = os.path.join(args.root_dir, args.code_dir, args.output_dir, 'recon_metric', 'mindeye1_220_fc(1)_learnable_layer1_highx.pt') # mindeye1.pt이 
         
         all_recons, all_targets, save_recons = inference(args, test_data, model_bundle, output_path)
 
@@ -159,7 +160,7 @@ def main():
                 f.write(f"{name}: {score:.4f}\n")
 
         # save_recons 저장
-        recons_dir = os.path.join(args.root_dir, args.code_dir, args.output_dir, "recons")
+        recons_dir = os.path.join(args.root_dir, args.code_dir, args.output_dir, "recon_highx")
         save_gt_vs_recon_images(save_recons, recons_dir)
 
 
@@ -379,25 +380,43 @@ def main_high_all_FuncSpatial():
 
 def retrieval():
     args = parse_args()
-
     setattr(args, 'mode', 'inference')
-    test_data = get_dataloader(args)
+    fwds, bwds = [], []
+    
+    for i in range(30):
+    
+        test_data = get_dataloader(args)
 
-    # model 정의
-    # models = get_model_highlevel(args)
-    models = get_model_highlevel_FuncSpatial(args) 
-    model_bundle = {
-        "clip": models["clip"].to(args.device),
-        "diffusion_prior": models["diffusion_prior"].to(args.device),
-    }
-    output_path = os.path.join(args.root_dir, args.code_dir, args.output_dir, 'recon_metric', 'mindeye1_236_fc(1)_learnable_layer1_후보.pt')
+        # model 정의
+        # models = get_model_highlevel(args)
+        models = get_model_highlevel_FuncSpatial(args) 
+        model_bundle = {
+            "clip": models["clip"].to(args.device),
+            "diffusion_prior": models["diffusion_prior"].to(args.device),
+        }
+        output_path = os.path.join(args.root_dir, args.code_dir, args.output_dir, 'recon_metric', 'mindeye1_220_fc(0.7)_learnable_layer1.pt')
 
-    retrieval_evaluate(args, test_data, model_bundle, output_path)
+        fwd, bwd = retrieval_evaluate(args, test_data, model_bundle, output_path)
+
+        fwds=np.append(fwds, fwd)
+        bwds=np.append(bwds, bwd)
+
+    percent_fwd = np.mean(fwds)
+    percent_bwd = np.mean(bwds)
+
+    print(f"fwd percent_correct: {percent_fwd:.4f}")
+    print(f"bwd percent_correct: {percent_bwd:.4f}")
+    
+    result_path = os.path.join(args.root_dir, args.code_dir, args.output_dir, f"mindeye1_retrieval_metrics_{args.experiment_name}.txt")
+    result_path = get_unique_path(result_path)
+    with open(result_path, "w") as f:
+        f.write(f"Forward Retrieval Accuracy: {percent_fwd:.4f}\n")
+        f.write(f"Backward Retrieval Accuracy: {percent_bwd:.4f}\n")
 
 
 if __name__ == "__main__":
-    # main()
+    main()
     # main_high_all()
     # main_low_all()
     # main_high_all_FuncSpatial()
-    retrieval()
+    # retrieval()

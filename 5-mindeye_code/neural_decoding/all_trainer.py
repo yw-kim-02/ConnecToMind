@@ -165,7 +165,7 @@ def high_train_inference_evaluate(args, train_data, test_data, models, optimizer
         torch.cuda.empty_cache() # gpu 메모리 cache삭제
         gc.collect() # # gpu 메모리 안 쓰는거 삭제
 
-        # if epoch >= 230 and epoch % 10 == 0:
+        # if epoch % 10 == 0:
         if epoch >= 200 and epoch % 10 == 0:
             
             #### inference ####

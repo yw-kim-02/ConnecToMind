@@ -190,6 +190,8 @@ class FuncSpatial_TrainDataset(Dataset): # ses단위로 실행
         self.cocoid = self.data['Y']
         self.image_path = image_path
         self.transform = transform # PIL.Image -> tensor
+
+        self.seq_len = self.fmri.shape[1]
        
 
     def __len__(self):
@@ -216,6 +218,8 @@ class FuncSpatial_TestDataset(Dataset): # ses단위로 실행
         self.low_image_path = low_image_path
         self.transform = transform # PIL.Image -> tensor
         self.use_low_image = use_low_image
+
+        self.seq_len = self.fmri.shape[1]
 
     def __len__(self):
         return len(self.cocoid)
@@ -405,19 +409,69 @@ def sub1_test_dataset_FuncSpatial(args):
 
 def get_dataloader(args):
 
+    # 제거할 index 집합
+    # drop_idx = {0, 5, 8, 10, 15, 18} # low
+    drop_idx = {1,4,11,14} # high
+ 
     if args.mode == 'train':
         train_dataset = sub1_train_dataset_FuncSpatial(args)
-        train_loader = DataLoader(train_dataset, batch_size=args.batch_size, num_workers=args.num_workers, prefetch_factor=args.prefetch_factor, persistent_workers=False, pin_memory=True, shuffle=True, worker_init_fn=worker_init_fn)
+        keep_idx = [i for i in range(train_dataset.seq_len) if i not in drop_idx]
+        train_loader = DataLoader(train_dataset, batch_size=args.batch_size, num_workers=args.num_workers, prefetch_factor=args.prefetch_factor, persistent_workers=False, pin_memory=True, shuffle=True, worker_init_fn=worker_init_fn, collate_fn=collate_fn_factory_train(keep_idx))
         return train_loader
     
     if args.mode == 'inference':
         test_dataset = sub1_test_dataset_FuncSpatial(args)
-        test_loader = DataLoader(test_dataset, batch_size=args.inference_batch_size, num_workers=args.num_workers, prefetch_factor=args.prefetch_factor, persistent_workers=False, pin_memory=True, worker_init_fn=worker_init_fn)
+        keep_idx = [i for i in range(test_dataset.seq_len) if i not in drop_idx]
+        test_loader = DataLoader(test_dataset, batch_size=args.inference_batch_size, num_workers=args.num_workers, prefetch_factor=args.prefetch_factor, persistent_workers=False, pin_memory=True, shuffle=args.is_shuffle, worker_init_fn=worker_init_fn, collate_fn=collate_fn_factory_test(keep_idx))
         return test_loader
+    
     
 def worker_init_fn(worker_id):
     seed = torch.initial_seed() % 2**32  # worker별 고유 seed 생성
     np.random.seed(seed)
     random.seed(seed)    
+
+def collate_fn_factory_train(keep_idx):
+    """
+    keep_idx 리스트를 클로저로 잡는 collate_fn 생성기
+    """
+    def collate_fn(batch):
+        # batch: list of tuples [(fmri, label), ...]
+        fmri_batch, label_batch = zip(*batch)
+        fmri_batch = torch.stack(fmri_batch, dim=0)        # [B, 20, 2056]
+        fmri_batch = fmri_batch[:, keep_idx, :]            # [B, len(keep_idx), 2056]
+        label_batch = torch.stack(label_batch, dim=0)
+        return fmri_batch, label_batch
+    return collate_fn
+
+def collate_fn_factory_test(keep_idx):
+    """
+    keep_idx 리스트를 클로저로 잡는 collate_fn 생성기
+    """
+    def collate_fn(batch):
+        # batch: list of tuples [(fmri_vol, image, low_image, image_id), ...]
+        fmri_list, image_list, low_list, id_list = zip(*batch)
+
+        # 1) fmri: [B, seq_len, feats]
+        fmri_batch = torch.stack(fmri_list, dim=0)
+        # 필요한 ROI만 남기기 (keep_idx 는 미리 정의된 리스트)
+        fmri_batch = fmri_batch[:, keep_idx, :]
+
+        # 2) image: [B, C, H, W] (transform이 Tensor 변환까지 했을 경우)
+        image_batch = torch.stack(image_list, dim=0)
+
+        # 3) low_image: use_low_image 여부에 따라 텐서 혹은 빈 리스트
+        if isinstance(low_list[0], torch.Tensor):
+            low_batch = torch.stack(low_list, dim=0)
+        else:
+            # low_image가 [] 로 들어오는 경우, 그냥 빈 리스트 묶음으로 전달
+            low_batch = list(low_list)
+
+        # 4) image_id: 문자열 ID 리스트
+        id_batch = list(id_list)
+
+        # 최종 반환: fmri, image, low_image, id
+        return fmri_batch, image_batch, low_batch, id_batch
+    return collate_fn
 
     

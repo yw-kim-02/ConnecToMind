@@ -54,7 +54,7 @@ def parse_args():
         help="experiment_name 새부이름"
     )
     parser.add_argument(
-        "--fc_matrix_path", type=str, default="/nas/research/03-Neural_decoding/3-bids/derivatives/raw_rest/sub-01/fc_matrix_vis20_mean.npy",
+        "--fc_matrix_path", type=str, default="/nas/research/03-Neural_decoding/3-bids/derivatives/raw_rest/sub-01/fc_matrix_wo_high_mean.npy",
         help="fc matrix 경로"
     )
 
@@ -80,7 +80,7 @@ def parse_args():
         "--seed",type=int,default=42,
     )
     parser.add_argument(
-        "--is_shuffle",type=argparse.BooleanOptionalAction,default=False,
+        "--is_shuffle",action=argparse.BooleanOptionalAction,default=False,
         help="is shuffle",
     )
     parser.add_argument(

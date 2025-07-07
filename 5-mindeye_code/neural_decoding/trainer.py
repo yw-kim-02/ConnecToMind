@@ -346,12 +346,4 @@ def retrieval_evaluate(args, data, models, model_path):
     percent_correct_fwd = np.mean(percent_correct_fwds)
     percent_correct_bwd = np.mean(percent_correct_bwds)
 
-
-    print(f"fwd percent_correct: {percent_correct_fwd:.4f}")
-    print(f"bwd percent_correct: {percent_correct_bwd:.4f}")
-    
-    result_path = os.path.join(args.root_dir, args.code_dir, args.output_dir, f"mindeye1_retrieval_metrics_{args.experiment_name}.txt")
-    result_path = get_unique_path(result_path)
-    with open(result_path, "w") as f:
-        f.write(f"Forward Retrieval Accuracy: {percent_correct_fwd:.4f}\n")
-        f.write(f"Backward Retrieval Accuracy: {percent_correct_bwd:.4f}\n")
+    return percent_correct_fwd, percent_correct_bwd

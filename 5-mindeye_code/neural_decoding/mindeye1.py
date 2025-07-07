@@ -271,10 +271,6 @@ class CustomMultiheadAttention(nn.Module):
 
         return out
     
-    def cosine_similarity_matrix(self, x):
-        x_norm = F.normalize(x, dim=2)  # 정규화: 각 벡터의 크기를 1로
-        sim_matrix = torch.matmul(x_norm, x_norm.transpose(1, 2))  # [N, N] pairwise cosine similarity
-        return sim_matrix
     
 
 class BrainNetwork(nn.Module):
@@ -1100,7 +1096,7 @@ def get_model_highlevel_FuncSpatial(args):
     
     #### brain network 정의 ####
     out_dim = args.token_size * args.clip_size # 257 * 768
-    voxel2clip_kwargs = dict(input_dim=2056, embed_dim=768, output_dim=257, seq_len=20, nhead=8, num_layers=args.num_layers, is_position=args.is_position, is_fc=args.is_fc, fc_matrix_path=args.fc_matrix_path)
+    voxel2clip_kwargs = dict(input_dim=2056, embed_dim=768, output_dim=257, seq_len=16, nhead=8, num_layers=args.num_layers, is_position=args.is_position, is_fc=args.is_fc, fc_matrix_path=args.fc_matrix_path)
     voxel2clip = BrainTransformerNetwork(**voxel2clip_kwargs)
 
     #### difussion prior 정의 ####
