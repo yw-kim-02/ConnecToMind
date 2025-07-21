@@ -18,14 +18,10 @@ from transformers import CLIPVisionModelWithProjection
 
 # for prior
 from dalle2_pytorch import DiffusionPrior
-from dalle2_pytorch.dalle2_pytorch import l2norm, default, exists
+from dalle2_pytorch.dalle2_pytorch import l2norm, default, exists, RotaryEmbedding, CausalTransformer, SinusoidalPosEmb, MLP, Rearrange, repeat, rearrange, prob_mask_like, LayerNorm, RelPosBias, Attention, FeedForward
 from tqdm.auto import tqdm
 import random
-import json
 from dalle2_pytorch.train_configs import DiffusionPriorNetworkConfig
-
-# for vd 
-from dalle2_pytorch.dalle2_pytorch import RotaryEmbedding, CausalTransformer, SinusoidalPosEmb, MLP, Rearrange, repeat, rearrange, prob_mask_like, LayerNorm, RelPosBias, Attention, FeedForward
 
 # for low-level
 from diffusers import DiffusionPipeline
@@ -349,7 +345,7 @@ class BrainDiffusionPrior(DiffusionPrior):
     def forward(self, text_embed = None, image_embed = None, *args, **kwargs):
         '''
         loss: loss(prediction x_0, target x_0) - shape: Scala
-        pred: x_t -> x_t-1 denoise한 결과 - shape: [batch, 768]
+        pred: x_t -> x_t-1 denoise한 결과 - shape: [batch, 257, 768]
         '''
         batch, device = image_embed.shape[0], image_embed.device
         times = self.noise_scheduler.sample_random_times(batch)
@@ -366,7 +362,7 @@ class BrainDiffusionPrior(DiffusionPrior):
     def p_losses(self, image_embed, times, text_embed=None, noise = None):
         '''
         loss: loss(prediction x_0, target x_0) - shape: Scala
-        pred: x_t -> x_t-1 denoise한 결과 - shape: [batch, 768]
+        pred: x_t -> x_t-1 denoise한 결과 - shape: [batch, 257, 768]
         '''
         # noise 정의
         noise = default(noise, lambda: torch.randn_like(image_embed)) 
@@ -374,15 +370,8 @@ class BrainDiffusionPrior(DiffusionPrior):
         # random한 t가 들어옴 -> x_0에서 한 번에 t까지의 noise를 씌움 
         image_embed_noisy = self.noise_scheduler.q_sample(x_start = image_embed, t = times, noise = noise)
 
-        # self conditioning: prediction 값(x_0) = function(x_t, image_embed_noisy(첫 번째 prediction값)) 
-        self_cond = None
-        if self.net.self_cond and random.random() < 0.5:
-            with torch.no_grad():
-                # self.net은 x_0의 prediction 값을 반환
-                self_cond = self.net(image_embed_noisy, times, text_embed=text_embed).detach() # 첫 번째 prediction값을 뽑기위해 self.net사용
-
         # prediction 값(x_0)
-        pred = self.net(image_embed_noisy, times, self_cond = self_cond, text_embed=text_embed, text_cond_drop_prob = self.text_cond_drop_prob, image_cond_drop_prob = self.image_cond_drop_prob) # cond_drop_prob: 텍스트 & 이미지 드롭아웃 확률 
+        pred = self.net(image_embed_noisy, times, text_embed=text_embed) # cond_drop_prob: 텍스트 & 이미지 드롭아웃 확률 
 
         # prediction 값(x_0) normalization
         if self.predict_x_start and self.training_clamp_l2norm:
@@ -391,7 +380,7 @@ class BrainDiffusionPrior(DiffusionPrior):
         # x_0를 비교하는 방식
         target = image_embed
 
-        loss = self.noise_scheduler.loss_fn(pred, target) # diffusion prior에서는 ε가 아닌 x_0를 예측함
+        loss = nn.functional.mse_loss(pred, target) # diffusion prior에서는 ε가 아닌 x_0를 예측함
         return loss, pred # train 할 때 보통 loss와 prediction 같이 반환
 
     @torch.no_grad()
@@ -409,12 +398,11 @@ class BrainDiffusionPrior(DiffusionPrior):
         if self.init_image_embed_l2norm:
             image_embed = l2norm(image_embed) * self.image_embed_scale
 
-        # t_t -> x_0으로 denoise 시작
+        # t_t -> x_0으로 denoise 시작 -> self.noise_scheduler.num_timesteps: 1000
         for i in tqdm(reversed(range(0, self.noise_scheduler.num_timesteps)), desc='sampling loop time step', total=self.noise_scheduler.num_timesteps, disable=True):
             times = torch.full((batch,), i, device = device, dtype = torch.long)
 
-            self_cond = x_start if self.net.self_cond else None
-            image_embed, x_start = self.p_sample(image_embed, times, text_cond = text_cond, self_cond = self_cond, cond_scale = cond_scale, generator=generator)
+            image_embed, x_start = self.p_sample(image_embed, times, text_cond = text_cond, cond_scale = cond_scale, generator=generator)
         
         # image embedding(x_0) nomalization
         if self.sampling_final_clamp_l2norm and self.predict_x_start:
@@ -442,7 +430,8 @@ class BrainDiffusionPrior(DiffusionPrior):
         return pred, x_start
 
 
-# dalle2의 denoising에서 입실론을 뽑는 class(이름이 versatile인 이유는 모르겠음) -> DiffusionPrior class에서 net의 인자로 사용
+# dalle2의 diffusionprior에서 x0(보통은 입실론)을 뽑음 only 1 step (이름이 versatile인 이유는 모르겠음) -> DiffusionPrior class에서 net의 인자로 사용
+# 참고로 입실론을 구하면 x0는 한 번에 구할 수 있음
 class VersatileDiffusionPriorNetwork(nn.Module):
     def __init__(
         self,
@@ -451,22 +440,22 @@ class VersatileDiffusionPriorNetwork(nn.Module):
         num_time_embeds = 1, # time embedding 개수
         num_tokens = 257,
         causal = True,
-        learned_query_mode = 'none', # query 사용 방법
+        learned_query_mode = 'none', 
         **kwargs
     ):
         super().__init__()
         self.dim = dim # 768
         self.num_time_embeds = num_time_embeds
         self.continuous_embedded_time = not exists(num_timesteps) # time embedding값이 continous or descrete
-        self.learned_query_mode = learned_query_mode # query가 학습되는 방법법
+        self.learned_query_mode = learned_query_mode # 학습가능한 positional embedding
 
-        # time embedding 변환
+        # time embedding으로 변환
         self.to_time_embeds = nn.Sequential( 
             nn.Embedding(num_timesteps, dim * num_time_embeds) if exists(num_timesteps) else nn.Sequential(SinusoidalPosEmb(dim), MLP(dim, dim * num_time_embeds)), # also offer a continuous version of timestep embeddings, with a 2 layer MLP
             Rearrange('b (n d) -> b n d', n = num_time_embeds)
         )
 
-        # query(pure noise로 만들어짐)
+        # token
         if self.learned_query_mode == 'pos_emb': # image embedding + positional embedding
             scale = dim ** -0.5
             self.learned_query = nn.Parameter(torch.randn(num_tokens, dim) * scale)
@@ -474,97 +463,46 @@ class VersatileDiffusionPriorNetwork(nn.Module):
         # transformer 저장
         self.causal_transformer = FlaggedCausalTransformer(dim = dim, causal=causal, **kwargs)
 
-        # Classifier-Free Guidance: condition이 있을 때와 없을 때의 차이를 계산하기위해 사용되는 의미없는 embedding
-        self.null_brain_embeds = nn.Parameter(torch.randn(num_tokens, dim))
-        self.null_image_embed = nn.Parameter(torch.randn(num_tokens, dim))
-
         # tokens.shape = [batch_size, total_token, dim]
-        # total_token= [ brain_embed(257개), time_embed(1개), image_embed(257개) , learned_queries(257개)] -> 이 중에서 맞춰야 할 embed
+        # total_token = [brain_embed(257개), time_embed(1개), image_embed(257개)] -> 이 중에서 맞춰야 할 embed
         self.num_tokens = num_tokens # 예측해야할 vector 차원
         
-        # Self-conditioning: output을 input으로 사용하하여 output을 또 뽑음
-        self.self_cond = False 
-
-    # Classifier-Free Guidance(inference할 때만 사용)
-    def forward_with_cond_scale(self,*args,cond_scale = 1.,**kwargs):
-        # 모든 데이터가 condition이 적용된 prediction 값 - pure noise + cross attention
-        logits = self.forward(*args, **kwargs) 
-
-        if cond_scale == 1:
-            return logits
-
-        # 모든 데이터가 condition이 적용되지 않은 prediction 값 - pure noise
-        null_logits = self.forward(*args, brain_cond_drop_prob = 1, image_cond_drop_prob = 1, **kwargs) # mask가 모두 1
-
-        # condition이 있을 때와 없을 때의 차이를 계산 
-        return null_logits + (logits - null_logits) * cond_scale
 
     def forward(
         self,
-        image_embed, # query: pure noise 
+        image_embed, # pure noise 
         diffusion_timesteps,
         *,
-        self_cond=None,
-        brain_embed=None,
         text_embed=None,
-        brain_cond_drop_prob = 0., # dropout 확률
-        text_cond_drop_prob = None, # dropout 확률
-        image_cond_drop_prob = 0. # dropout 확률
     ):  
         # brain embed = text embed  
         if text_embed is not None:
             brain_embed = text_embed 
-        if text_cond_drop_prob is not None: 
-            brain_cond_drop_prob = text_cond_drop_prob 
         
         # shape 변경
         image_embed = image_embed.view(len(image_embed),-1,768) # image_embed.shape -> [B, 257, 768]
         brain_embed = brain_embed.view(len(brain_embed),-1,768) # brain_embed.shape -> [B, 257, 768]
         
         batch, _, dim, device, dtype = *image_embed.shape, image_embed.device, image_embed.dtype
-        
-        # classifier free guidance masks 생성: inference에서는 모두 1인것과 모두 0인것을 둘 다 뽑음
-        brain_keep_mask = prob_mask_like((batch,), 1 - brain_cond_drop_prob, device = device)
-        brain_keep_mask = rearrange(brain_keep_mask, 'b -> b 1 1') # brain_mask.shape -> [B, 1, 1]
-
-        image_keep_mask = prob_mask_like((batch,), 1 - image_cond_drop_prob, device = device)
-        image_keep_mask = rearrange(image_keep_mask, 'b -> b 1 1') # image_mask.shape -> [B, 1, 1]
-
-
-        # image_keep_mask에 해당하는 embedding값은 모두 0 or 1
-        null_brain_embeds = self.null_brain_embeds.to(brain_embed.dtype)
-        brain_embed = torch.where(
-            brain_keep_mask, # broadcast
-            brain_embed,
-            null_brain_embeds[None]
-        )
-
-        # image_keep_mask에 해당하는 embedding값은 모두 0 or 1
-        null_image_embed = self.null_image_embed.to(image_embed.dtype)
-        image_embed = torch.where( 
-            image_keep_mask, # broadcast
-            image_embed,
-            null_image_embed[None]
-        )
 
         # time_embedding
         if self.continuous_embedded_time:
             diffusion_timesteps = diffusion_timesteps.type(dtype)
         time_embed = self.to_time_embeds(diffusion_timesteps)
 
-        # query 정의
+        # token 정의
         if self.learned_query_mode == 'pos_emb':
             pos_embs = repeat(self.learned_query, 'n d -> b n d', b = batch) # repeat: '257 768' shape -> 'b 257 768' shape로 변경
-            image_embed = image_embed + pos_embs # query(pure noise로 만들어짐) -(forward)-> prediction 값
+            image_embed = image_embed + pos_embs # pure noise로 만들어짐 -(forward)-> prediction 값
 
             tokens = torch.cat((
-                brain_embed,  # key, value로 사용: [b, 257, 768] 
+                brain_embed,  # [b, 257, 768] 
                 time_embed,  # [b, 1, 768]
-                image_embed,  # query로 사용: [b, 257, 768]
-            ), dim = -2) # [b, 257 + 1 + 257 + 257, 768] = [b, 772, 768]
+                image_embed,  # [b, 257, 768]
+            ), dim = -2) # [b, 257 + 1 + 257 + 257, 768] = [b, 515, 768]
 
         # transformer
-        tokens = self.causal_transformer(tokens) # output: [b, 772, 768]
+        tokens = self.causal_transformer(tokens) # output: [b, 515, 768]
 
         pred_image_embed = tokens[..., -self.num_tokens:, :] # output: [b, 257, 768] - image_embed를 prediction값으로 사용
 
@@ -707,231 +645,6 @@ class Voxel2StableDiffusionModel(torch.nn.Module):
             return self.upsampler(x), self.maps_projector(x).flatten(2).permute(0,2,1)
         return self.upsampler(x)
 
-class OpenClipper(torch.nn.Module):
-    def __init__(self, clip_variant='ViT-H-14', hidden_state=False, norm_embs=False, device=torch.device('cpu')):
-        super().__init__()
-        print(clip_variant, device)
-        assert clip_variant == 'ViT-H-14' # not setup for other models yet
-         
-        try:
-            clip_model, _, preprocess = open_clip.create_model_and_transforms('ViT-H-14', 
-                                        pretrained="/fsx/proj-medarc/fmri/cache/openclip/open_clip_pytorch_model.bin", device=device)
-        except:
-            print("no cached model found, downloading...")
-            clip_model, _, preprocess = open_clip.create_model_and_transforms('ViT-H-14', 
-                                        pretrained='laion2b_s32b_b79k', device=device)
-            
-        clip_model.eval() # dont want to train model
-        for param in clip_model.parameters():
-            param.requires_grad = False # dont need to calculate gradients
-            
-        # overwrite preprocess to accept torch inputs instead of PIL Image
-        preprocess = transforms.Compose([
-                transforms.Resize(224, interpolation=transforms.InterpolationMode.BICUBIC, antialias=None),
-                transforms.CenterCrop(224),
-                transforms.Normalize(mean=(0.48145466, 0.4578275, 0.40821073), std=(0.26862954, 0.26130258, 0.27577711))
-        ])
-            
-        self.clip = clip_model
-        self.preprocess = preprocess
-        self.device = device
-        self.norm_embs = norm_embs
-        
-        if hidden_state:
-            print("THIS IS NOT WORKING CURRENTLY!")
-            clip_model.visual.transformer.resblocks[31].mlp = nn.Identity()
-            clip_model.visual.ln_post = nn.Identity()
-            clip_model.token_embedding = nn.Identity()
-            clip_model.ln_final = nn.Identity()
-            
-    def embed_image(self, image):
-        """Expects images in -1 to 1 range"""
-        clip_emb = self.preprocess(image.to(self.device))
-        clip_emb = self.clip.encode_image(clip_emb)
-        if self.norm_embs:
-            clip_emb = nn.functional.normalize(clip_emb.flatten(1), dim=-1)
-            clip_emb = clip_emb.reshape(len(clip_emb),-1,1024)
-        return clip_emb
-
-
-class BrainDiffusionPriorOld(DiffusionPrior):
-    """ 
-    Differences from original:
-    - Allow for passing of generators to torch random functions
-    - Option to include the voxel2clip model and pass voxels into forward method
-    - Return predictions when computing loss
-    - Load pretrained model from @nousr trained on LAION aesthetics
-    """
-    def __init__(self, *args, **kwargs):
-        voxel2clip = kwargs.pop('voxel2clip', None)
-        super().__init__(*args, **kwargs)
-        self.voxel2clip = voxel2clip
-
-    @torch.no_grad()
-    def p_sample(self, x, t, text_cond = None, self_cond = None, clip_denoised = True, cond_scale = 1.,
-                generator=None):
-        b, *_, device = *x.shape, x.device
-        model_mean, _, model_log_variance, x_start = self.p_mean_variance(x = x, t = t, text_cond = text_cond, self_cond = self_cond, clip_denoised = clip_denoised, cond_scale = cond_scale)
-        if generator is None:
-            noise = torch.randn_like(x)
-        else:
-            #noise = torch.randn_like(x)
-            noise = torch.randn(x.size(), device=x.device, dtype=x.dtype, generator=generator)
-        # no noise when t == 0
-        nonzero_mask = (1 - (t == 0).float()).reshape(b, *((1,) * (len(x.shape) - 1)))
-        pred = model_mean + nonzero_mask * (0.5 * model_log_variance).exp() * noise
-        return pred, x_start
-
-    @torch.no_grad()
-    def p_sample_loop(self, shape, text_cond, cond_scale = 1., generator=None):
-        batch, device = shape[0], self.device
-
-        if generator is None:
-            image_embed = torch.randn(shape, device = device)
-        else:
-            image_embed = torch.randn(shape, device = device, generator=generator)
-        x_start = None # for self-conditioning
-
-        if self.init_image_embed_l2norm:
-            image_embed = l2norm(image_embed) * self.image_embed_scale
-
-        for i in tqdm(reversed(range(0, self.noise_scheduler.num_timesteps)), desc='sampling loop time step', total=self.noise_scheduler.num_timesteps, disable=True):
-            times = torch.full((batch,), i, device = device, dtype = torch.long)
-
-            self_cond = x_start if self.net.self_cond else None
-            image_embed, x_start = self.p_sample(image_embed, times, text_cond = text_cond, self_cond = self_cond, cond_scale = cond_scale, 
-                                                 generator=generator)
-
-        if self.sampling_final_clamp_l2norm and self.predict_x_start:
-            image_embed = self.l2norm_clamp_embed(image_embed)
-
-        return image_embed
-
-    def p_losses(self, image_embed, times, text_cond, noise = None):
-        noise = default(noise, lambda: torch.randn_like(image_embed))
-
-        image_embed_noisy = self.noise_scheduler.q_sample(x_start = image_embed, t = times, noise = noise)
-
-        self_cond = None
-        if self.net.self_cond and random.random() < 0.5:
-            with torch.no_grad():
-                self_cond = self.net(image_embed_noisy, times, **text_cond).detach()
-
-        pred = self.net(
-            image_embed_noisy,
-            times,
-            self_cond = self_cond,
-            text_cond_drop_prob = self.text_cond_drop_prob,
-            image_cond_drop_prob = self.image_cond_drop_prob,
-            **text_cond
-        )
-
-        if self.predict_x_start and self.training_clamp_l2norm:
-            pred = self.l2norm_clamp_embed(pred)
-
-        if self.predict_v:
-            target = self.noise_scheduler.calculate_v(image_embed, times, noise)
-        elif self.predict_x_start:
-            target = image_embed
-        else:
-            target = noise
-
-        loss = self.noise_scheduler.loss_fn(pred, target)
-        return loss, pred
-
-    def forward(
-        self,
-        text = None,
-        image = None,
-        voxel = None,
-        text_embed = None,      # allow for training on preprocessed CLIP text and image embeddings
-        image_embed = None,
-        text_encodings = None,  # as well as CLIP text encodings
-        *args,
-        **kwargs
-    ):
-        # 
-        assert exists(text) ^ exists(text_embed) ^ exists(voxel), 'either text, text embedding, or voxel must be supplied'
-        assert exists(image) ^ exists(image_embed), 'either image or image embedding must be supplied'
-        assert not (self.condition_on_text_encodings and (not exists(text_encodings) and not exists(text))), 'text encodings must be present if you specified you wish to condition on it on initialization'
-
-        if exists(voxel):
-            assert exists(self.voxel2clip), 'voxel2clip must be trained if you wish to pass in voxels'
-            assert not exists(text_embed), 'cannot pass in both text and voxels'
-            text_embed = self.voxel2clip(voxel)
-
-        if exists(image):
-            image_embed, _ = self.clip.embed_image(image)
-
-        # calculate text conditionings, based on what is passed in
-
-        if exists(text):
-            text_embed, text_encodings = self.clip.embed_text(text)
-
-        text_cond = dict(text_embed = text_embed)
-
-        if self.condition_on_text_encodings:
-            assert exists(text_encodings), 'text encodings must be present for diffusion prior if specified'
-            text_cond = {**text_cond, 'text_encodings': text_encodings}
-
-        # timestep conditioning from ddpm
-
-        batch, device = image_embed.shape[0], image_embed.device
-        times = self.noise_scheduler.sample_random_times(batch)
-
-        # scale image embed (Katherine)
-
-        image_embed *= self.image_embed_scale
-
-        # calculate forward loss
-
-        loss, pred = self.p_losses(image_embed, times, text_cond = text_cond, *args, **kwargs)
-
-        return loss, pred#, text_embed
-   
-    @staticmethod
-    def from_pretrained(net_kwargs={}, prior_kwargs={}, voxel2clip_path=None, ckpt_dir='./checkpoints'):
-        # "https://huggingface.co/nousr/conditioned-prior/raw/main/vit-l-14/aesthetic/prior_config.json"
-        config_url = os.path.join(ckpt_dir, "prior_config.json")
-        config = json.load(open(config_url))
-        
-        config['prior']['net']['max_text_len'] = 256
-        config['prior']['net'].update(net_kwargs)
-        # print('net_config', config['prior']['net'])
-        net_config = DiffusionPriorNetworkConfig(**config['prior']['net'])
-
-        kwargs = config['prior']
-        kwargs.pop('clip')
-        kwargs.pop('net')
-        kwargs.update(prior_kwargs)
-        # print('prior_config', kwargs)
-
-        diffusion_prior_network = net_config.create()
-        diffusion_prior = BrainDiffusionPriorOld(net=diffusion_prior_network, clip=None, **kwargs).to(torch.device('cpu'))
-        
-        # 'https://huggingface.co/nousr/conditioned-prior/resolve/main/vit-l-14/aesthetic/best.pth'
-        ckpt_url = os.path.join(ckpt_dir, 'best.pth')
-        ckpt = torch.load(ckpt_url, map_location=torch.device('cpu'))
-
-        # Note these keys will be missing (maybe due to an update to the code since training):
-        # "net.null_text_encodings", "net.null_text_embeds", "net.null_image_embed"
-        # I don't think these get used if `cond_drop_prob = 0` though (which is the default here)
-        diffusion_prior.load_state_dict(ckpt, strict=False)
-        # keys = diffusion_prior.load_state_dict(ckpt, strict=False)
-        # print("missing keys in prior checkpoint (probably ok)", keys.missing_keys)
-
-        if voxel2clip_path:
-            # load the voxel2clip weights
-            checkpoint = torch.load(voxel2clip_path, map_location=torch.device('cpu'))
-            
-            state_dict = checkpoint['model_state_dict']
-            for key in list(state_dict.keys()):
-                if 'module.' in key:
-                    state_dict[key.replace('module.', '')] = state_dict[key]
-                    del state_dict[key]
-            diffusion_prior.voxel2clip.load_state_dict(state_dict)
-        
-        return diffusion_prior
 
 def get_model_lowlevel(args):
 
