@@ -98,9 +98,9 @@ def parse_args():
     ####################
 
     ###### mindeye1 ######
-    parser.add_argument(
-        "--subj",type=int, default=1, choices=[1,2,5,7],
-    )
+    # parser.add_argument(
+    #     "--subj",type=int, default=1, choices=[1,2,5,7],
+    # )
     parser.add_argument(
         "--clip_size",type=int,default=768,
         help='clip embedding 크기',
