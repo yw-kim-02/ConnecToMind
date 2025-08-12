@@ -8,11 +8,11 @@ def parse_args():
     ###### Frequently changing settings ######
     parser.add_argument(
         '--mode', type=str, choices=['train', 'inference', 'evaluate'], default='train',
-        help="train, inference, evaluate 구분"
+        help="train, inference, evaluate"
     )
     parser.add_argument(
         "--num_epochs",type=int,default=250, choices=[3,240],
-        help="epoch 개수",
+        help="epoch num",
     )
     parser.add_argument(
         "--device",type=str,default="cuda:3",
@@ -51,7 +51,7 @@ def parse_args():
     )
     parser.add_argument(
         "--experiment_name", type=str, default="fc(1)_learnable_layer1",
-        help="experiment_name 새부이름"
+        help="experiment_name 세부이름"
     )
     parser.add_argument(
         "--fc_matrix_path", type=str, default="/nas/research/03-Neural_decoding/3-bids/derivatives/raw_rest/sub-01/fc_matrix_wo_high_mean.npy",
@@ -69,7 +69,7 @@ def parse_args():
     )
     parser.add_argument(
         "--fmri_detail_dir", type=str, default="beta_hf_dk",
-        choices=["b4_roi_zscore","beta_huggingface","beta_hf_dk"],
+        choices=["beta_huggingface","beta_hf_dk"],
         help="Path to the BIDS fmri_detail."
     )
     parser.add_argument(

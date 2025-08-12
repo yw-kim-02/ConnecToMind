@@ -45,7 +45,7 @@ class Clipper(torch.nn.Module):
         else:
             self.clip_size = (224,224)
 
-        # clip preporcess를 custom으로 사용함
+        # clip preprocess를 custom으로 사용함
         self.preprocess = None # object를 변수로 저장
         self.mean = np.array([0.48145466, 0.4578275, 0.40821073]) # OpenAI CLIP이 학습한 이미지 데이터 셋의 평균
         self.std = np.array([0.26862954, 0.26130258, 0.27577711]) # OpenAI CLIP이 학습한 이미지 데이터 셋의 표준편차
@@ -315,10 +315,10 @@ class BrainNetwork(nn.Module):
         x(MLP projector): fmri -> mlp -> mlp - shape: ([batch, 768], [batch, 257, 768])
         '''
         # fMRI volume 그대로 들어올 때
-        if x.ndim == 4:
-            # assert x.shape[1] == 81 and x.shape[2] == 104 and x.shape[3] == 83, "fMRI data shape 안 맞음" # [N, 81, 104, 83]은 nsd genaral roi이다
-            assert x.shape[1] == 120 and x.shape[2] == 120 and x.shape[3] == 84, "fMRI data shape 안 맞음" # [N, 120, 120, 84]은 nsd raw data이다.
-            x = x.reshape(x.shape[0], -1) # [N, 1209600]
+        #if x.ndim == 4:
+        #    # assert x.shape[1] == 81 and x.shape[2] == 104 and x.shape[3] == 83, "fMRI data shape 안 맞음" # [N, 81, 104, 83]은 nsd genaral roi이다
+        #    assert x.shape[1] == 120 and x.shape[2] == 120 and x.shape[3] == 84, "fMRI data shape 안 맞음" # [N, 120, 120, 84]은 nsd raw data이다.
+        #    x = x.reshape(x.shape[0], -1) # [N, 1209600]
         
         # MLP back born
         x = self.lin0(x) # bs, h
@@ -430,7 +430,7 @@ class BrainDiffusionPrior(DiffusionPrior):
         return pred, x_start
 
 
-# dalle2의 diffusionprior에서 x0(보통은 입실론)을 뽑음 only 1 step (이름이 versatile인 이유는 모르겠음) -> DiffusionPrior class에서 net의 인자로 사용
+# dalle2의 diffusionprior에서 x0(보통은 입실론)을 뽑음 only 1 step -> DiffusionPrior class에서 net의 인자로 사용
 # 참고로 입실론을 구하면 x0는 한 번에 구할 수 있음
 class VersatileDiffusionPriorNetwork(nn.Module):
     def __init__(
@@ -650,20 +650,20 @@ def get_model_lowlevel(args):
 
     if args.subj == 1:
         num_voxels = 15724
-    elif args.subj == 2:
-        num_voxels = 14278
-    elif args.subj == 3:
-        num_voxels = 15226
-    elif args.subj == 4:
-        num_voxels = 13153
-    elif args.subj == 5:
-        num_voxels = 13039
-    elif args.subj == 6:
-        num_voxels = 17907
-    elif args.subj == 7:
-        num_voxels = 12682
-    elif args.subj == 8:
-        num_voxels = 14386
+    #elif args.subj == 2:
+    #   num_voxels = 14278
+    #elif args.subj == 3:
+    #    num_voxels = 15226
+    #elif args.subj == 4:
+    #    num_voxels = 13153
+    #elif args.subj == 5:
+    #    num_voxels = 13039
+    #elif args.subj == 6:
+    #    num_voxels = 17907
+    #elif args.subj == 7:
+    #    num_voxels = 12682
+    #elif args.subj == 8:
+    #    num_voxels = 14386
 
     #### voxel2autoencoder ####
     # voxel2autoencoder 정의
@@ -707,20 +707,20 @@ def get_model_highlevel(args):
 
     if args.subj == 1:
         num_voxels = 15724
-    elif args.subj == 2:
-        num_voxels = 14278
-    elif args.subj == 3:
-        num_voxels = 15226
-    elif args.subj == 4:
-        num_voxels = 13153
-    elif args.subj == 5:
-        num_voxels = 13039
-    elif args.subj == 6:
-        num_voxels = 17907
-    elif args.subj == 7:
-        num_voxels = 12682
-    elif args.subj == 8:
-        num_voxels = 14386
+    #elif args.subj == 2:
+    #    num_voxels = 14278
+    #elif args.subj == 3:
+    #    num_voxels = 15226
+    #elif args.subj == 4:
+    #    num_voxels = 13153
+    #elif args.subj == 5:
+    #    num_voxels = 13039
+    #elif args.subj == 6:
+    #    num_voxels = 17907
+    #elif args.subj == 7:
+    #    num_voxels = 12682
+    #elif args.subj == 8:
+    #    num_voxels = 14386
     
     #### clip 정의 ####
     clip_extractor = Clipper(clip_variant=args.clip_variant, norm_embs=args.norm_embs, hidden_state=args.hidden, device=args.device)

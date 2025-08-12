@@ -185,7 +185,7 @@ class hug_TestDataset(Dataset): # ses단위로 실행
     
 class FuncSpatial_TrainDataset(Dataset): # ses단위로 실행
     def __init__(self, fmri_path, image_path, transform):
-        self.data = np.load(fmri_path, mmap_mode='r', allow_pickle=True) # 포인터만 받아와서 메모리에 올라온 것은 아님
+        self.data = np.load(fmri_path, mmap_mode='r', allow_pickle=True)
         self.fmri = self.data['X']
         self.cocoid = self.data['Y']
         self.image_path = image_path
