@@ -1,6 +1,5 @@
-
+#retrieval
 # shuffle true로 바꿔야함
-benchmark retrieval: python neural_decoding/main.py --device "cuda:3" --fmri_detail_dir "beta_huggingface" --experiment_name "benchmark" --inference_batch_size 300 --is_shuffle
 
 fc(1)_learnable_layer1_retrieval: python neural_decoding/main.py --device "cuda:2" --is_fc --is_position --fmri_detail_dir "beta_hf_dk" --experiment_name "fc(1)_learnable_layer1" --inference_batch_size 300 --is_shuffle
 
@@ -15,7 +14,7 @@ vanila_layer1_retrieval: python neural_decoding/main.py --device "cuda:1" --no-i
 
 
 
-
+#train to evaluate
 
 fc(1)_learnable_layer1: python neural_decoding/main.py --device "cuda:3" --is_fc --is_position --fmri_detail_dir "beta_hf_dk" --experiment_name "fc(1)_learnable_layer1" --batch_size 160 --inference_batch_size 25 --prefetch_factor 10 --num_workers 30 
 
