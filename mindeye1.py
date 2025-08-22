@@ -135,7 +135,7 @@ class BrainTransformerNetwork(nn.Module):
         self.seq_len = seq_len
         self.is_position = is_position
 
-        # roi별로 다른 weight의 linear layer (seq_len x input_dim x embed_dim) -> einsum 사용
+        # roi별로 다른 weight로 linear transformation
         self.linear1_weight = nn.Parameter(torch.empty(seq_len, input_dim, embed_dim))
         for t in range(seq_len):
             init.xavier_uniform_(self.linear1_weight[t]) # xavier_uniform 초기화
@@ -146,6 +146,7 @@ class BrainTransformerNetwork(nn.Module):
         # positional embedding
         self.pos_embedding = nn.Parameter(torch.randn(1, seq_len, embed_dim))
 
+        #use fc prior
         if is_fc:
             encoder_layer = CustomTransformerEncoderLayer(fc_matrix_path=fc_matrix_path, d_model=embed_dim, nhead=nhead)
         else:
@@ -170,9 +171,9 @@ class BrainTransformerNetwork(nn.Module):
         x(FuncSpatial Backbone): fmri -> tr - shape: [batch, (257*768)]
         x(FuncSpatial projector): fmri -> tr -> mlp - shape: ([batch, 768], [batch, 257, 768])
         '''
-        # 각 roi마다 linear layer
+        # linear projection
         # x = self.linear1(x)  # [B, 20, 768]
-        x = torch.einsum("btd,tdh->bth", x, self.linear1_weight) # [B, 20, 768]
+        x = torch.einsum("btd,tdh->bth", x, self.linear1_weight)
         x = self.layernorm1(x)
         x = self.gelu(x)
         x = self.dropout1(x)
@@ -181,9 +182,10 @@ class BrainTransformerNetwork(nn.Module):
         if self.is_position:
             x = x + self.pos_embedding
 
+        # Connectome-Transformer with fc prior
         x = self.transformer_encoder(x)  # [B, 20, 768]
-        x = x.permute(0, 2, 1)  # [B, 768, 20]
 
+        x = x.permute(0, 2, 1)  # [B, 768, 20]
         x = self.linear2(x)  # [B, 768, 257]
         x = x.permute(0, 2, 1)  # [B, 257, 768]
 
@@ -267,8 +269,6 @@ class CustomMultiheadAttention(nn.Module):
 
         return out
     
-    
-
 class BrainNetwork(nn.Module):
     def __init__(self, in_dim=15724, out_dim=257*768, clip_size=768, h=4096, n_blocks=4, norm_type='ln', act_first=False):
         super().__init__()
@@ -333,7 +333,6 @@ class BrainNetwork(nn.Module):
 
         # MLP backborn, MLP projection(contrastive learning)
         return x, self.projector(x.reshape(len(x), -1, self.clip_size))
-
         
 # BrainNetwork과 versatileDiffusionPriorNetwork가 인자로 들어감
 class BrainDiffusionPrior(DiffusionPrior):
@@ -429,14 +428,13 @@ class BrainDiffusionPrior(DiffusionPrior):
         pred = model_mean + nonzero_mask * (0.5 * model_log_variance).exp() * noise
         return pred, x_start
 
-
 # dalle2의 diffusionprior에서 x0(보통은 입실론)을 뽑음 only 1 step (이름이 versatile인 이유는 모르겠음) -> DiffusionPrior class에서 net의 인자로 사용
 # 참고로 입실론을 구하면 x0는 한 번에 구할 수 있음
 class VersatileDiffusionPriorNetwork(nn.Module):
     def __init__(
         self,
         dim,
-        num_timesteps = None, # time step 수 ex) 1000
+        num_timesteps = None, # time step 수
         num_time_embeds = 1, # time embedding 개수
         num_tokens = 257,
         causal = True,
@@ -444,10 +442,10 @@ class VersatileDiffusionPriorNetwork(nn.Module):
         **kwargs
     ):
         super().__init__()
-        self.dim = dim # 768
+        self.dim = dim
         self.num_time_embeds = num_time_embeds
-        self.continuous_embedded_time = not exists(num_timesteps) # time embedding값이 continous or descrete
-        self.learned_query_mode = learned_query_mode # 학습가능한 positional embedding
+        self.continuous_embedded_time = not exists(num_timesteps) # time embedding값이 continuous or discrete
+        self.learned_query_mode = learned_query_mode # learnable positional embedding
 
         # time embedding으로 변환
         self.to_time_embeds = nn.Sequential( 
@@ -648,22 +646,7 @@ class Voxel2StableDiffusionModel(torch.nn.Module):
 
 def get_model_lowlevel(args):
 
-    if args.subj == 1:
-        num_voxels = 15724
-    elif args.subj == 2:
-        num_voxels = 14278
-    elif args.subj == 3:
-        num_voxels = 15226
-    elif args.subj == 4:
-        num_voxels = 13153
-    elif args.subj == 5:
-        num_voxels = 13039
-    elif args.subj == 6:
-        num_voxels = 17907
-    elif args.subj == 7:
-        num_voxels = 12682
-    elif args.subj == 8:
-        num_voxels = 14386
+    num_voxels = 15724
 
     #### voxel2autoencoder ####
     # voxel2autoencoder 정의
@@ -705,34 +688,19 @@ def get_model_lowlevel(args):
 
 def get_model_highlevel(args):
 
-    if args.subj == 1:
-        num_voxels = 15724
-    elif args.subj == 2:
-        num_voxels = 14278
-    elif args.subj == 3:
-        num_voxels = 15226
-    elif args.subj == 4:
-        num_voxels = 13153
-    elif args.subj == 5:
-        num_voxels = 13039
-    elif args.subj == 6:
-        num_voxels = 17907
-    elif args.subj == 7:
-        num_voxels = 12682
-    elif args.subj == 8:
-        num_voxels = 14386
+    num_voxels = 15724
     
-    #### clip 정의 ####
+    #clip (img to clip embedding)
     clip_extractor = Clipper(clip_variant=args.clip_variant, norm_embs=args.norm_embs, hidden_state=args.hidden, device=args.device)
     
-    #### brain network 정의 ####
-    out_dim = args.token_size * args.clip_size # 257 * 768
+    # brain network (fmri to clip embedding)
+    out_dim = args.token_size * args.clip_size
     voxel2clip_kwargs = dict(in_dim=num_voxels, out_dim=out_dim, clip_size=args.clip_size)
     voxel2clip = BrainNetwork(**voxel2clip_kwargs)
 
-    #### difussion prior 정의 ####
-    out_dim = args.clip_size # 모델 거치면 257 * 768 나옴
-    depth = 6 # transformer의 layer 수 -> versatile의 한 step의 layer
+    # Connectome-Transformer
+    out_dim = args.clip_size
+    depth = 6 # transformer의 layer 수
     dim_head = 64 # head당 dim
     heads = args.clip_size//dim_head # attention head 수
     timesteps = 100 # difusion step 수 
@@ -804,20 +772,20 @@ def get_model_highlevel(args):
 
 def get_model_highlevel_FuncSpatial(args):
     
-    #### clip 정의 ####
+    # clip (img to clip embedding)
     clip_extractor = Clipper(clip_variant=args.clip_variant, norm_embs=args.norm_embs, hidden_state=args.hidden, device=args.device)
     
-    #### brain network 정의 ####
-    out_dim = args.token_size * args.clip_size # 257 * 768
+    # Brain network (region-level embedding + Connectome-Transformer)
+    out_dim = args.token_size * args.clip_size
     voxel2clip_kwargs = dict(input_dim=2056, embed_dim=768, output_dim=257, seq_len=16, nhead=8, num_layers=args.num_layers, is_position=args.is_position, is_fc=args.is_fc, fc_matrix_path=args.fc_matrix_path)
     voxel2clip = BrainTransformerNetwork(**voxel2clip_kwargs)
 
-    #### difussion prior 정의 ####
-    out_dim = args.clip_size # 모델 거치면 257 * 768 나옴
-    depth = 6 # transformer의 layer 수 -> versatile의 한 step의 layer
-    dim_head = 64 # head당 dim
-    heads = args.clip_size//dim_head # attention head 수
-    timesteps = 100 # difusion step 수 
+    # diffusion prior
+    out_dim = args.clip_size
+    depth = 6
+    dim_head = 64
+    heads = args.clip_size//dim_head
+    timesteps = 100  
     
     prior_network = VersatileDiffusionPriorNetwork(
         dim=out_dim,
