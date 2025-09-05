@@ -51,4 +51,5 @@ python neural_decoding/main.py --device "cuda:2" --is_fc --is_position --fmri_de
 <p align="center">
   <img src="img/2-qualitative_comparison.png" alt="Qualitative comparison of reconstructed images across models" style="width:90%;">
 </p>
-For more details, please refer to our [research paper]().
+For detailed quantitative and qualitative results, please refer to our [paper]().
+
