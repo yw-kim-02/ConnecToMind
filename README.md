@@ -1,11 +1,11 @@
 # ConnecToMind
-ConnecToMind: Connectome-Aware fMRI Decoding for Visual Image Reconstruction (MLMI2025)
+### ConnecToMind: Connectome-Aware fMRI Decoding for Visual Image Reconstruction
 ---
 
 ![Overview of ConnecToMind](img/1-model_architecture.png)
 
 For a comprehensive description of our methodology and results, please refer to our paper:
-📄[ConnecToMind](). 
+📄[ConnecToMind]()
 
 ## Dataset
 We utilize multi-modal neuroimaging data (T1-weighted MRI, rs-fMRI, and task-fMRI) from the **Natural Scenes Dataset(NSD)**, which provides high-resolution 7-Tesla MRI data from eight participants. 
