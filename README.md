@@ -4,19 +4,21 @@
 ![Overview of ConnecToMind](img/1-model_architecture.png)
 *Figure 1. Overview of the ConnecToMind architecture. ConnecToMind is consisted of (a) region-level fMRI embeddings module and (b) Connectome-Transformer guided by FC prior.*
 
-📄[Read our Paper]()
+📄Read our paper, [ConnecToMind: Connectome-Aware fMRI Decoding for Visual Image Reconstruction]() for detailed methods and results. 
 
 ## Dataset
-We utilize multi-modal neuroimaging data (T1-weighted MRI, rs-fMRI, and task-fMRI) from the **Natural Scenes Dataset(NSD)**. 
+We utilize multi-modal neuroimaging data (T1-weighted MRI, rs-fMRI, and task-fMRI) from the **Natural Scenes Dataset(NSD)**, which provides high-resolution 7-Tesla MRI data from eight participants. 
+Following prior work, we use subject 1 data, who completed 28,577 task-fMRI trials with 9,519 unique images from the COCO dataset.
 ### Data Preparation
 To prepare the dataset for the model input, please use the provided preprocessing scripts:
 ```bash
-python download_preprocess_beta.py
+python download_beta.py
+python preprocess_beta.py
 python additional_files.py
 ```
 
 ## Usage Guide
-### 1. Clone the repository
+### 1. Clone repository
 ```bash
 git clone https://github.com/aimed-gist/ConneToMind
 cd ConnecToMind
@@ -27,8 +29,6 @@ pip install -r requirements.txt
 ```
 
 ### 3. Run the model
-<details>
-<summary>Click to expand</summary>
 ```bash
 #ConnecToMind
 python neural_decoding/main.py --device "cuda:3" --is_fc --is_position --fmri_detail_dir "beta_hf_dk" --experiment_name "fc(1)_learnable_layer1" --batch_size 160 --inference_batch_size 25 --prefetch_factor 10 --num_workers 30
@@ -45,7 +45,7 @@ python neural_decoding/main.py --device "cuda:0" --is_fc --is_position --fmri_de
 #Retrieval
 python neural_decoding/main.py --device "cuda:2" --is_fc --is_position --fmri_detail_dir "beta_hf_dk" --experiment_name "fc(1)_learnable_layer1" --inference_batch_size 300 --is_shuffle
 ```
-</details>
+
 
 ## Model Performance
 ![Qualitative comparison of reconstructed images across models](img/2-qualitative_comparison.png)
