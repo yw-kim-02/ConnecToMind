@@ -1,6 +1,5 @@
 # ConnecToMind
 ### ConnecToMind: Connectome-Aware fMRI Decoding for Visual Image Reconstruction
----
 
 ![Overview of ConnecToMind](img/1-model_architecture.png)
 
@@ -49,5 +48,7 @@ python neural_decoding/main.py --device "cuda:2" --is_fc --is_position --fmri_de
 
 
 ## Model Performance
-![Qualitative comparison of reconstructed images across models](img/2-qualitative_comparison.png)
+<p align="center">
+  <img src="img/2-qualitative_comparison.png" alt="Qualitative comparison of reconstructed images across models" style="width:90%;">
+</p>
 For more details, please refer to our [research paper]().
