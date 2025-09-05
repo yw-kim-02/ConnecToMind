@@ -203,69 +203,6 @@ def sub1_test_dataset_FuncSpatial(args):
     
     return test_dataset
 
-def train_dataset_hug2(args, subj_names):
-    """
-    subj_names: ['subj01', 'subj02', ...] 
-    """
-    root_dir = args.root_dir
-    fmri_dir = args.fmri_dir
-    fmri_detail_dir = args.fmri_detail_dir
-    image_dir = args.image_dir
-
-    transform = transforms.ToTensor()
-
-    datasets = {}
-    for subj in subj_names:
-        fmri_path = os.path.join(root_dir, fmri_dir, fmri_detail_dir, subj, f"{subj}_fmri_with_labels_train.npz")
-        image_path = os.path.join(root_dir, image_dir)
-
-        dataset = hug2_TrainDataset(fmri_path, image_path, transform)
-        datasets[subj] = dataset
-
-    return datasets  # {'subj01': Dataset, 'subj02': Dataset, ...}
-
-def test_dataset_hug2(args, subj_names):
-    """
-    subj_names: ['subj01', 'subj02', ...] 
-    """
-    root_dir = args.root_dir
-    fmri_dir = args.fmri_dir
-    fmri_detail_dir = args.fmri_detail_dir
-    image_dir = args.image_dir
-
-    transform = transforms.ToTensor()
-
-    datasets = {}
-    for subj in subj_names:
-        fmri_path = os.path.join(root_dir, fmri_dir, fmri_detail_dir, subj, f"{subj}_fmri_with_labels_test.npz")
-        image_path = os.path.join(root_dir, image_dir)
-
-        dataset = hug2_TestDataset(fmri_path, image_path, transform)
-        datasets[subj] = dataset
-
-    return datasets  # {'subj01': Dataset, 'subj02': Dataset, ...}
-
-def get_dataloader_hug2(args):
-    train_loaders={}
-    inference_loaders={}
-
-    if args.mode == 'train':
-        train_datasets = train_dataset_hug2(args)
-
-        for subj in train_datasets.keys():
-            train_loader = DataLoader(train_datasets[subj], batch_size=args.batch_size, num_workers=args.num_workers, prefetch_factor=args.prefetch_factor, persistent_workers=False, pin_memory=True, shuffle=True)
-            train_loaders[subj] = train_loader
-
-        return train_loaders
-    
-    if args.mode == 'inference':
-        inference_datasets = test_dataset_hug2(args)
-
-        for subj in inference_datasets.keys():
-            inference_loaders = DataLoader(inference_datasets[subj], batch_size=args.batch_size, num_workers=args.num_workers, prefetch_factor=args.prefetch_factor, persistent_workers=False, pin_memory=True, shuffle=True)
-            inference_loaders[subj] = inference_loaders
-
-        return inference_loaders
 
 def get_dataloader(args):
 

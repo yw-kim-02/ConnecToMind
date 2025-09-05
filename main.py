@@ -20,7 +20,6 @@ from trainer import train, inference, evaluate, retrieval_evaluate
 from all_trainer import high_train_inference_evaluate, low_train_inference_evaluate
 from utils import seed_everything, get_unique_path, save_gt_vs_recon_images
 
-
 def main_high_all():
 
     args = parse_args()
