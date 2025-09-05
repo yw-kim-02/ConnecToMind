@@ -25,14 +25,14 @@ from dalle2_pytorch.train_configs import DiffusionPriorNetworkConfig
 
 # for low-level
 from diffusers import DiffusionPipeline
-from convnext import ConvnextXL
+from models.convnext import ConvnextXL
 from diffusers.models.autoencoder_kl import Decoder
 
 # get model
-import utils
+import utils.utils as utils
 from diffusers import VersatileDiffusionDualGuidedPipeline, UniPCMultistepScheduler
 from diffusers.models import DualTransformer2DModel
-from schedulers import get_scheduler
+from trainers.schedulers import get_scheduler
 
 class Clipper(torch.nn.Module):
     def __init__(self, clip_variant, clamp_embs=False, norm_embs=False, hidden_state=False, device=torch.device('cpu')):
